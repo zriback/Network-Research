@@ -8,6 +8,11 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 from dataclasses import dataclass
+import platform
+
+# "Linux" or "Windows"
+# found when running the main function
+os_name = ''
 
 @dataclass
 class CaptureData:
@@ -125,7 +130,11 @@ def read_cleaned_file(filename, sep):
 
 
 def clear_screen():
-    os.system('cls')
+    global os_name
+    if os_name == 'Windows':
+        os.system('cls')
+    else:  # 'Linux'
+        os.system('clear')
 
 
 def run_cmd(command: str) -> str:
@@ -152,12 +161,14 @@ def get_user_input(message: str, default, use_type: type, help=None):
         user_input = input()
         if user_input == '':  # user is trying to use the default
             if default == 'use timestamp':
+                print()
                 return str(int(time.time()))
             elif default is None:
                 clear_screen()
                 print(RED_COLOR + 'No default value to use. Enter a valid value.\n' + DEFAULT_COLOR)
                 continue
             else:
+                print()
                 return default
         elif user_input == 'help' and help is not None:
             clear_screen()
@@ -182,7 +193,10 @@ def capture_traffic():
     for nice_name in [f'{name.ips[0].nice_name}' for name in ifaddr.get_adapters()]:
         adapter_names += (nice_name + '\n')
     capture_interface_help = f'Enter the name of a valid interface:\n{adapter_names}'
-    capture_interface = get_user_input('Enter the capture interface. Use "help" for help', None, str, capture_interface_help)
+    
+    while (capture_interface := get_user_input('Enter the capture interface. Use "help" for help', None, str, capture_interface_help)) not in adapter_names:
+        clear_screen()
+        print(RED_COLOR + 'Not a valid adapter name\n' + DEFAULT_COLOR)
 
     capture_filter = get_user_input('Enter a capture filter', '', str, None)
 
@@ -192,7 +206,7 @@ def capture_traffic():
     
     stop_method_help = 'Options:\n\tmanual - stops on user key press\n\tduration:NUM - stop after NUM seconds\n\
     \tpackets:NUM - stop after NUM packets\nExamples: manual, duration:30, packets:100\n'
-    stop_method = get_user_input('Enter stop method. Use "help" for help.', 'manual', str, stop_method_help)
+    stop_method = get_user_input('Enter stop method. Use "help" for help', 'manual', str, stop_method_help)
     manual_stop = False
     if stop_method.startswith('manual'):
         manual_stop = True
@@ -210,6 +224,7 @@ def capture_traffic():
     if not manual_stop:
         tshark_command_list.extend(['-a', stop_method])
     
+    print(tshark_command_list)
     tshark_process = sp.Popen(tshark_command_list, stdout=sp.PIPE, stderr=sp.PIPE)
     clear_screen()
     print(GREEN_COLOR + 'Started capture!' + DEFAULT_COLOR)
@@ -248,6 +263,7 @@ def clean_captures():
     'To clean multiple captures, enter their names separated by a comma.\n\nValid captures:\n'
     get_target_capture_help += ''.join(f'{capture_name}\n' for capture_name in os.listdir(CAPTURES_FILEPATH))
     
+
     target_captures_input = get_user_input('Enter a capture to clean. Use "help" for help.', 'all', str, get_target_capture_help)
     if target_captures_input == 'all':
         target_captures_list.extend(filename for filename in os.listdir(CAPTURES_FILEPATH) if filename not in os.listdir(CLEANED_FILEPATH))
@@ -261,10 +277,14 @@ def clean_captures():
         if not capture.endswith('.txt'):
             capture = capture + '.txt'
         print('\t' + YELLOW_COLOR + f'Cleaning {capture}' + DEFAULT_COLOR)
-        capture_filepath = f'{CAPTURES_FILEPATH}\\{capture}'
-        output_filepath = f'{CLEANED_FILEPATH}\\{capture}'
-
-        capture_file = open(capture_filepath, 'r')
+        capture_filepath = os.path.join(CAPTURES_FILEPATH, capture)
+        output_filepath = os.path.join(CLEANED_FILEPATH, capture)
+        
+        try:
+            capture_file = open(capture_filepath, 'r')
+        except FileNotFoundError:
+            print('\t' + RED_COLOR + f'The file {capture} could not be found. Skipping...')
+            continue
         output_file = open(output_filepath, 'wb')
 
         byte_string = None
@@ -397,7 +417,7 @@ def analyze_data():
         get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
     
     while True:
-        user_selection = get_user_input('Enter the name or number of the file to analyze', None, str, get_file_help)
+        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
 
         # check if the user is inputting a number
         try:
@@ -432,6 +452,9 @@ def analyze_data():
     print(f'Total number of packets: {capture_data.num_packets}')
 
     # do matplotlib charts
+    # set interactive mode
+    plt.ion()
+
     # make 2x2 figure for displaying four plots
     fig, ax = plt.subplots(nrows=2, ncols=3)
     fig.set_figheight(6)
@@ -498,17 +521,46 @@ def analyze_data():
     this_ax.set_xticks(bins, bins, rotation=45, ha='right', rotation_mode='anchor', size=8)
     this_ax.xaxis.set_major_formatter(FormatStrFormatter('%0.2f'))
 
-    # display the figure
+    # # display the figure
+    # fig.show()
+
+    # large histogram
+    large_histogram_fig = plt.figure()
+    large_histogram_fig.set_figheight(6)
+    large_histogram_fig.set_figwidth(12)
+    this_ax = large_histogram_fig.add_subplot(1, 1, 1)
+    data = [val/1000000 for val in capture_data.microsec_times]
+    counts, bins, patches = this_ax.hist(data, bins=50)
+    this_ax.set_title('Packet Time Histogram')
+    this_ax.set_xlabel('Packet Time (s)')
+    this_ax.set_ylabel('Frequency')
+    this_ax.set_xticks(bins, bins, rotation=45, ha='right', rotation_mode='anchor', size=8)
+    this_ax.xaxis.set_major_formatter(FormatStrFormatter('%0.2f'))
+    
     fig.show()
+    large_histogram_fig.show()
 
     print(GREEN_COLOR + 'Charts are being displayed...' + DEFAULT_COLOR)
     input('Press enter to clear charts and return to the main menu...')
-    plt.close()
+    
+    # close figures
+    plt.close(fig)
+    plt.close(large_histogram_fig)
+    
     clear_screen()
     print()
 
 
 def main():
+    # get the operating system
+    global os_name
+    os_name = platform.system()
+    if os_name == 'Windows' or os_name == 'Linux':
+        print(GREEN_COLOR + f'Detected running on {os_name} system!' + DEFAULT_COLOR)
+    else:
+        print(RED_COLOR + f'Detecting running on {os_name} system which is not supported.' + DEFAULT_COLOR)
+        exit()
+
     while True:
         print_menu()
         try:
