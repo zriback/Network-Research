@@ -211,7 +211,7 @@ def capture_traffic():
     if stop_method.startswith('manual'):
         manual_stop = True
 
-    full_path = f'{CAPTURES_FILEPATH}\\{output_filename}'
+    full_path = os.path.join(CAPTURES_FILEPATH, output_filename)
 
     tshark_command_list = [
         'tshark',
@@ -224,8 +224,13 @@ def capture_traffic():
     if not manual_stop:
         tshark_command_list.extend(['-a', stop_method])
     
-    print(tshark_command_list)
-    tshark_process = sp.Popen(tshark_command_list, stdout=sp.PIPE, stderr=sp.PIPE)
+    try:
+        tshark_process = sp.Popen(tshark_command_list, stdout=sp.PIPE, stderr=sp.PIPE)
+    except FileNotFoundError:
+        print(RED_COLOR + 'tshark could not be found. Perhaps it needs to be installed?' + DEFAULT_COLOR)
+        print(RED_COLOR + 'Kicking you back to the main menu...\n' + DEFAULT_COLOR)
+        return
+    
     clear_screen()
     print(GREEN_COLOR + 'Started capture!' + DEFAULT_COLOR)
     print(f'Using command: {" ".join(tshark_command_list)}', end='\n\n')
@@ -250,7 +255,7 @@ def capture_traffic():
     run_cmd(f'tshark -r {full_path}.pcap -F k12text -w {full_path}.txt')
     os.remove(f'{full_path}.pcap')
 
-    print(f'Capture file is available at {CAPTURES_FILEPATH}\\{output_filename}.txt\n')
+    print(f'Capture file is available at {full_path}.txt\n')
     input('Press enter to return to the main menu...')
     clear_screen()
     print()
@@ -346,6 +351,10 @@ def get_capture_data(packets):
     microsec_times = []
 
     for line in packets:
+        if not line:
+            print(RED_COLOR + 'Something is wrong with this data. It is possible no data was captured')
+            return None
+
         packet_bytes = line[TOTAL_EMBEDDED_TIME_LENGTH:]
 
         # looks though ONLY the first 25 charactes of the line for the full time identifier
@@ -444,6 +453,13 @@ def analyze_data():
     target_file_path = os.path.join(CLEANED_FILEPATH, target_file)
     cleaned_file_packets = read_cleaned_file(target_file_path, PACKET_DELIMETER)
     capture_data = get_capture_data(cleaned_file_packets)
+
+    if capture_data is None:
+        print(RED_COLOR + 'No data to analyze' + DEFAULT_COLOR)
+        input('Press enter to clear charts and return to the main menu...')
+        clear_screen()
+        print()
+        return
 
     print(GREEN_COLOR + 'Analysis complete!' + DEFAULT_COLOR)
     print()
@@ -558,7 +574,7 @@ def main():
     if os_name == 'Windows' or os_name == 'Linux':
         print(GREEN_COLOR + f'Detected running on {os_name} system!' + DEFAULT_COLOR)
     else:
-        print(RED_COLOR + f'Detecting running on {os_name} system which is not supported.' + DEFAULT_COLOR)
+        print(RED_COLOR + f'Detected running on {os_name} system which is not supported.' + DEFAULT_COLOR)
         exit()
 
     while True:
