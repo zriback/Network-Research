@@ -17,6 +17,9 @@ os_name = ''
 @dataclass
 class CaptureData:
     num_packets: int = 0
+    eth_num: int = 0
+    ip_num: int = 0
+    tcp_num: int = 0
     average_length: float = 0
     src_mac_counts: dict = None
     dst_mac_counts: dict = None
@@ -304,6 +307,9 @@ def clean_captures():
 
 def get_capture_data(filename: str):
     total_length = 0
+    eth_num = 0
+    ip_num = 0
+    tcp_num = 0
     num_packets = 0
 
     eth_type_counts = {}
@@ -329,6 +335,14 @@ def get_capture_data(filename: str):
         # grab appropriate data from the packet
         packet_length = len(packet_bytes)
         eth_type = get_eth_type(packet_bytes)
+        
+        # check if eth type is below 0600
+        # if so, this is an IEEE 802.3 frame
+        if int(eth_type, 16) < 0x0600:
+            yellow_print('IEEE 802.3 frame detected. Skipping...')
+            continue
+        
+        eth_num += 1
         src_mac = get_src_mac(packet_bytes)
         dst_mac = get_dst_mac(packet_bytes)
 
@@ -340,6 +354,7 @@ def get_capture_data(filename: str):
         eth_type_counts[eth_type_string] = eth_type_counts.setdefault(eth_type_string, 0) + 1
 
         if eth_type_string == 'IPv4':
+            ip_num += 1
             ip_proto = get_ip_proto(packet_bytes)
             src_ip = get_src_ip(packet_bytes)
             dst_ip = get_dst_ip(packet_bytes)
@@ -352,6 +367,7 @@ def get_capture_data(filename: str):
         
         # TCP packet
         if eth_type_string == 'IPv4' and ip_proto_string == 'TCP':
+            tcp_num += 1
             src_port = str(int(get_src_port(packet_bytes), 16))
             dst_port = str(int(get_dst_port(packet_bytes), 16))
 
@@ -373,6 +389,9 @@ def get_capture_data(filename: str):
     # 'sort' the dictionaries contents by key (implementation specific)
     capture_data = CaptureData(
         num_packets=num_packets,
+        eth_num=eth_num,
+        ip_num=ip_num,
+        tcp_num=tcp_num,
         average_length=average_length,
         src_mac_counts=dict(sorted(src_mac_counts.items(), key=lambda item: item[1], reverse=True)),
         dst_mac_counts=None,
@@ -432,8 +451,7 @@ def analyze_data():
     green_print('Analysis complete!')
     print()
 
-    print(f'Average Length: {capture_data.average_length:.2f}')
-    print(f'Total number of packets: {capture_data.num_packets}')
+    print_text_analysis(capture_data)
 
     # do matplotlib charts
     # set interactive mode
@@ -532,6 +550,58 @@ def analyze_data():
     plt.close(large_histogram_fig)
     
     clear_screen()
+    print()
+
+
+def print_counts_dict(counts_dict: dict):
+    if len(counts_dict) == 0:
+        print('No data collected for this statistic')
+        return
+    extra_values = 0
+    for i, (mac, count) in enumerate(counts_dict.items()):
+        if i < MAX_BAR_CHART_BARS:
+            print(f'{mac:.<40}{count}')
+        else:
+            extra_values += 1
+    if extra_values:
+        print(f'{extra_values} more values not shown')
+
+
+def print_text_analysis(capture_data: CaptureData) -> None:
+    print('Overall Counts:')
+    print(f'{"Average Length:":.<40}{capture_data.average_length:.2f}')
+    print(f'{"Total number of packets:":.<40}{capture_data.num_packets}')
+    print(f'{"Total Ethernet II packets:":.<40}{capture_data.eth_num}')
+    print(f'{"Total IP packets:":.<40}{capture_data.ip_num}')
+    print(f'{"Total TCP packets:":.<40}{capture_data.tcp_num}')
+    print()
+
+    print('Ethernet Type Counts:')
+    print_counts_dict(capture_data.eth_type_counts)
+    print()
+
+    print('IP Protocol Counts')
+    print_counts_dict(capture_data.ip_proto_counts)
+    print()
+
+    print('Source MAC Counts:')
+    print_counts_dict(capture_data.src_mac_counts)
+    print()
+
+    # print('Destination MAC Counts:')
+    # print_counts_dict(capture_data.dst_mac_counts)
+    # print()
+
+    print('Source IP Counts:')
+    print_counts_dict(capture_data.src_ip_counts)
+    print()
+
+    # print('Destination IP Counts:')
+    # print_counts_dict(capture_data.dst_ip_counts)
+    # print()
+
+    print('TCP Source Port Counts:')
+    print_counts_dict(capture_data.src_port_counts)
     print()
 
 
