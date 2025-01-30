@@ -9,6 +9,7 @@ from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 from dataclasses import dataclass
 import platform
+import pickle
 
 # "Linux" or "Windows"
 # found when running the main function
@@ -34,6 +35,10 @@ class CaptureData:
 
 CAPTURES_FILEPATH = 'captures'
 CLEANED_FILEPATH = 'cleaned'
+
+# Number of nibbles to extract from each packet as a feature from each packet
+# The first NUM_FEATURES/2 bytes are extracted from each packet
+NUM_FEATURES = 128
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -118,7 +123,8 @@ def print_menu():
     output = 'Select an option:\n'
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
-    output += '\t(3) Analyze Data'
+    output += '\t(3) Analyze Data\n'
+    output += '\t(4) Extract features'
     print(output)
 
 
@@ -605,6 +611,80 @@ def print_text_analysis(capture_data: CaptureData) -> None:
     print()
 
 
+def extract_features():
+    files = [file for file in os.listdir(CLEANED_FILEPATH)]
+
+    get_file_help = 'Choose one of the below files from which to extract features.\nYou can also enter the number corresponding to each file.\n'
+    for i, file in enumerate(files):
+        get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
+    
+    while True:
+        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
+
+        # check if the user is inputting a number
+        try:
+            user_num_selection = int(user_selection)
+            # to execute this code, it must be a number
+            if user_num_selection < 0 or user_num_selection >= len(files):
+                red_print('That number is out of range.\n')
+                continue
+            target_filename = files[user_num_selection]
+            # found a valid file
+            break     
+        except ValueError:  # not a number. User is entering a file name
+            if not user_selection.endswith('.txt'):
+                user_selection = user_selection + '.txt'
+            if user_selection not in files:
+                red_print(f'Could not find the file {user_selection}\n')
+                continue
+            # found a valid file
+            target_filename = user_selection
+            break
+    
+    target_file_path = os.path.join(CLEANED_FILEPATH, target_filename)
+
+    while True:
+        out_filename = get_user_input('Enter the relative path for the output file (.obj) file.', 'out.obj', str, None)
+        
+        out_filename.rstrip(os.path.sep)
+        if not out_filename.endswith('.obj'):
+            out_filename = f'{out_filename}.obj'
+
+        try:
+            open(out_filename, 'a').close()
+            break
+        except FileNotFoundError:
+            clear_screen()
+            red_print(f'The path {os.path.normpath(out_filename)} could not be found\n')
+        except PermissionError:
+            clear_screen()
+            red_print('You do not have permission to write to that file.')
+        except Exception as e:
+            clear_screen()
+            red_print(f'An error occurred with that file :( \n{e}')
+    
+    clear_screen()
+
+    # Initialize counters
+    packets_analyzed = 0
+    features_extracted = 0
+    with open(target_file_path, 'r') as target_file, open(out_filename, 'ab') as out_file:
+        # Create a list of nibbles for each packe in target_file
+        for line in target_file:
+            packets_analyzed += 1
+            nibbles = [let for let in line.split()[1][:NUM_FEATURES]]
+            features_extracted += len(nibbles)
+
+            # Convert to a ndarray and pickle to out file
+            nibbles = np.array(nibbles)
+            pickle.dump(nibbles, out_file)
+
+    green_print(f'Data from {target_filename} successfully pickled to {out_filename}')
+    green_print(f'Analyzed {features_extracted} features from {packets_analyzed} packets!')
+    input('\nPress enter to return to the main menu...')
+    clear_screen()
+
+
 def main():
     # get the operating system
     global os_name
@@ -641,6 +721,8 @@ def main():
             clean_captures()
         elif user_input == 3:
             analyze_data()
+        elif user_input == 4:
+            extract_features()
         else:
             clear_screen()
             red_print('Enter the number for a valid option\n')
