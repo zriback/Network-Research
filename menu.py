@@ -21,6 +21,7 @@ class CaptureData:
     eth_num: int = 0
     ip_num: int = 0
     tcp_num: int = 0
+    udp_num: int = 0
     average_length: float = 0
     src_mac_counts: dict = None
     dst_mac_counts: dict = None
@@ -28,8 +29,11 @@ class CaptureData:
     dst_ip_counts: dict = None
     eth_type_counts: dict = None
     ip_proto_counts: dict = None
-    src_port_counts: dict = None
-    dst_port_counts: dict = None
+    tcp_src_port_counts: dict = None
+    tcp_dst_port_counts: dict = None
+    udp_src_port_counts: dict = None
+    udp_dst_port_counts: dict = None
+    other_type_counts: dict = None
     microsec_times: list = None
 
 
@@ -61,13 +65,29 @@ DST_PORT_LOC = 36
 ETH_TYPES = {
     '0800' : 'IPv4',
     '0806' : 'ARP',
-    '86dd' : 'IPv6'
+    '86dd' : 'IPv6',
+    '9000' : 'LOOP'
 }
 
 IP_PROTOS = {
     '01' : 'ICMP',
     '06' : 'TCP',
     '11' : 'UDP',
+}
+
+TCP_SERVICE_PORTS = {
+    '80' : 'HTTP',
+    '8080' : 'HTTP-8080',
+    '443' : 'HTTPS',
+    '137' : 'NBNS'
+}
+
+UDP_SERVICE_PORTS = {
+    '53' : 'DNS',
+    '67' : 'DHCP',
+    '68' : 'DHCP',
+    '137' : 'NBNS',
+    '1900' : 'SSDP'
 }
 
 def green_print(msg: str) -> None:
@@ -316,14 +336,19 @@ def get_capture_data(filename: str):
     eth_num = 0
     ip_num = 0
     tcp_num = 0
+    udp_num = 0
     num_packets = 0
 
     eth_type_counts = {}
     ip_proto_counts = {}
     src_mac_counts = {}
     src_ip_counts = {}
-    src_port_counts = {}
-    dst_port_counts = {}
+    tcp_src_port_counts = {}
+    udp_src_port_counts = {}
+    tcp_dst_port_counts = {}
+    udp_dst_port_counts = {}
+    other_type_counts = {}
+
     microsec_times = []
 
     capture_file = open(filename, 'r')
@@ -345,7 +370,7 @@ def get_capture_data(filename: str):
         # check if eth type is below 0600
         # if so, this is an IEEE 802.3 frame
         if int(eth_type, 16) < 0x0600:
-            yellow_print('IEEE 802.3 frame detected. Skipping...')
+            other_type_counts['STP'] = other_type_counts.setdefault('STP', 0) + 1
             continue
         
         eth_num += 1
@@ -372,23 +397,43 @@ def get_capture_data(filename: str):
             ip_proto_counts[ip_proto_string] = ip_proto_counts.setdefault(ip_proto_string, 0) + 1
         
         # TCP packet
-        if eth_type_string == 'IPv4' and ip_proto_string == 'TCP':
-            tcp_num += 1
+        if eth_type_string == 'IPv4' and (ip_proto_string == 'TCP' or ip_proto_string == 'UDP'):
             src_port = str(int(get_src_port(packet_bytes), 16))
             dst_port = str(int(get_dst_port(packet_bytes), 16))
+            
+            if ip_proto_string == 'TCP':
+                tcp_num += 1
+                tcp_src_port_counts[src_port] = tcp_src_port_counts.setdefault(src_port, 0) + 1
+                tcp_dst_port_counts[dst_port] = tcp_dst_port_counts.setdefault(dst_port, 0) + 1
 
-            src_port_counts[src_port] = src_port_counts.setdefault(src_port, 0) + 1
-            dst_port_counts[dst_port] = dst_port_counts.setdefault(dst_port, 0) + 1
+
+
+                for port, protocol in TCP_SERVICE_PORTS.items():
+                    if src_port == port or dst_port == port:
+                        other_type_counts[protocol] = other_type_counts.setdefault(protocol, 0) + 1
+
+            else:  # UDP
+                udp_num += 1
+                udp_src_port_counts[src_port] = udp_src_port_counts.setdefault(src_port, 0) + 1
+                udp_dst_port_counts[dst_port] = udp_dst_port_counts.setdefault(dst_port, 0) + 1
+
+                if src_port == '1900' or dst_port == '1900':
+                    print('let me know')
+
+                for port, protocol in UDP_SERVICE_PORTS.items():
+                    if src_port == port or dst_port == port:
+                        other_type_counts[protocol] = other_type_counts.setdefault(protocol, 0) + 1
+                       
 
         total_length += packet_length
         num_packets += 1
 
     capture_file.close()
-    
+
     if not num_packets:  # zero packets in this capture
         red_print('No packets present')
         return None
-
+    
     average_length = total_length / num_packets
 
     # place all data into the class structure
@@ -398,6 +443,7 @@ def get_capture_data(filename: str):
         eth_num=eth_num,
         ip_num=ip_num,
         tcp_num=tcp_num,
+        udp_num=udp_num,
         average_length=average_length,
         src_mac_counts=dict(sorted(src_mac_counts.items(), key=lambda item: item[1], reverse=True)),
         dst_mac_counts=None,
@@ -405,8 +451,11 @@ def get_capture_data(filename: str):
         dst_ip_counts=None,
         eth_type_counts=dict(sorted(eth_type_counts.items(), key=lambda item: item[1], reverse=True)),
         ip_proto_counts=dict(sorted(ip_proto_counts.items(), key=lambda item: item[1], reverse=True)),
-        src_port_counts=dict(sorted(src_port_counts.items(), key=lambda item: item[1], reverse=True)),
-        dst_port_counts=dict(sorted(dst_port_counts.items(), key=lambda item: item[1], reverse=True)),
+        tcp_src_port_counts=dict(sorted(tcp_src_port_counts.items(), key=lambda item: item[1], reverse=True)),
+        udp_src_port_counts=dict(sorted(udp_src_port_counts.items(), key=lambda item: item[1], reverse=True)),
+        tcp_dst_port_counts=dict(sorted(tcp_dst_port_counts.items(), key=lambda item: item[1], reverse=True)),
+        udp_dst_port_counts=dict(sorted(udp_dst_port_counts.items(), key=lambda item: item[1], reverse=True)),
+        other_type_counts=dict(sorted(other_type_counts.items(), key=lambda item: item[1])),
         microsec_times=microsec_times
     )
 
@@ -511,8 +560,8 @@ def analyze_data():
 
     # 0,2 (src port counts)
     this_ax = ax[0,2]
-    labels = list(capture_data.src_port_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.src_port_counts.values())[:MAX_BAR_CHART_BARS]
+    labels = list(capture_data.tcp_src_port_counts.keys())[:MAX_BAR_CHART_BARS]
+    counts = list(capture_data.tcp_src_port_counts.values())[:MAX_BAR_CHART_BARS]
     this_ax.bar(labels, counts)
     this_ax.set_title('Source Port Counts')
     this_ax.set_xlabel('Source Port')
@@ -607,7 +656,11 @@ def print_text_analysis(capture_data: CaptureData) -> None:
     # print()
 
     print('TCP Source Port Counts:')
-    print_counts_dict(capture_data.src_port_counts)
+    print_counts_dict(capture_data.tcp_src_port_counts)
+    print()
+
+    print('Other types')
+    print_counts_dict(capture_data.other_type_counts)
     print()
 
 
@@ -669,7 +722,7 @@ def extract_features():
     packets_analyzed = 0
     features_extracted = 0
     with open(target_file_path, 'r') as target_file, open(out_filename, 'ab') as out_file:
-        # Create a list of nibbles for each packe in target_file
+        # Create a list of nibbles for each packet in target_file
         for line in target_file:
             packets_analyzed += 1
             nibbles = [let for let in line.split()[1][:NUM_FEATURES]]
