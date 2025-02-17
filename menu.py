@@ -44,6 +44,8 @@ CLEANED_FILEPATH = 'cleaned'
 # The first NUM_FEATURES/2 bytes are extracted from each packet
 NUM_FEATURES = 128
 
+SAMPLES_PER_CLASS = 10000
+
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
 
@@ -59,8 +61,11 @@ ETH_TYPE_LOC = 12
 SRC_IP_LOC = 26
 DST_IP_LOC = 30
 IP_PROTO_LOC = 23
+IPV6_NEXT_HEADER_LOC = 20
 SRC_PORT_LOC = 34
 DST_PORT_LOC = 36
+ARP_OPCODE_LOC = 20
+ICMP_TYPE_LOC = 34
 
 ETH_TYPES = {
     '0800' : 'IPv4',
@@ -73,21 +78,45 @@ IP_PROTOS = {
     '01' : 'ICMP',
     '06' : 'TCP',
     '11' : 'UDP',
+    '3a' : 'ICMPv6'
 }
 
 TCP_SERVICE_PORTS = {
-    '80' : 'HTTP',
-    '8080' : 'HTTP-8080',
-    '443' : 'HTTPS',
-    '137' : 'NBNS'
+    '0050' : 'HTTP',
+    '1f90' : 'HTTP-8080',
+    '01bb' : 'TLS',
+    '0089' : 'NBNS'
 }
 
 UDP_SERVICE_PORTS = {
-    '53' : 'DNS',
-    '67' : 'DHCP',
-    '68' : 'DHCP',
-    '137' : 'NBNS',
-    '1900' : 'SSDP'
+    '0035' : 'DNS',
+    '0043' : 'DHCP',
+    '0044' : 'DHCP',
+    '0089' : 'NBNS',
+    '076c' : 'SSDP',
+    '01bb' : 'QUIC'
+}
+
+ARP_OPCODES = {
+    '0001' : 'ARP Request',
+    '0002' : 'ARP Reply'
+}
+
+ICMP_TYPES = {
+    '00' : 'ICMP Echo Reply',
+    '08' : 'ICMP Echo Request'
+}
+
+CLASSES = {
+    # 'ARP Request': 0,
+    # 'ARP Reply' : 1,
+    # 'ICMP Echo Request' : 2,
+    # 'ICMP Echo Reply' : 3,
+    'TLS' : 4,
+    'HTTP' : 5,
+    'DNS' : 6,
+    'QUIC' : 7,
+    'Other' : 8
 }
 
 def green_print(msg: str) -> None:
@@ -120,8 +149,11 @@ get_src_ip = partial(get_header_field, loc=SRC_IP_LOC, length=4)
 get_dst_ip = partial(get_header_field, loc=DST_IP_LOC, length=4)
 get_eth_type = partial(get_header_field, loc=ETH_TYPE_LOC, length=2)
 get_ip_proto = partial(get_header_field, loc=IP_PROTO_LOC, length=1)
+get_ipv6_proto = partial(get_header_field, loc=IPV6_NEXT_HEADER_LOC, length=1)
 get_src_port = partial(get_header_field, loc=SRC_PORT_LOC, length=2)
 get_dst_port = partial(get_header_field, loc=DST_PORT_LOC, length=2)
+get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
+get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 
 
 def clear_screen():
@@ -417,9 +449,6 @@ def get_capture_data(filename: str):
                 udp_src_port_counts[src_port] = udp_src_port_counts.setdefault(src_port, 0) + 1
                 udp_dst_port_counts[dst_port] = udp_dst_port_counts.setdefault(dst_port, 0) + 1
 
-                if src_port == '1900' or dst_port == '1900':
-                    print('let me know')
-
                 for port, protocol in UDP_SERVICE_PORTS.items():
                     if src_port == port or dst_port == port:
                         other_type_counts[protocol] = other_type_counts.setdefault(protocol, 0) + 1
@@ -663,6 +692,29 @@ def print_text_analysis(capture_data: CaptureData) -> None:
     print_counts_dict(capture_data.other_type_counts)
     print()
 
+# returns packet class - our class are [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
+# this function returns [0, 1, 2, 3, 4, 5, 6, 7, 8] corresponding to each class
+def get_packet_class(packet_bytes: str) -> int:
+    other = CLASSES.get('Other')
+    if not other:
+        red_print('No "Other" value present in classes!\n')
+        return -1
+    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it echo reply or request
+        return CLASSES.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
+    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
+        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP
+            return CLASSES.get(ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other'), other)
+        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
+            src_port_class = CLASSES.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
+            return src_port_class if src_port_class != 8 else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
+            src_port_class = CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
+            return src_port_class if src_port_class != 8 else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+        else:  # neither TCP nor UDP
+            return other
+    else:  # IPv6 or something else
+        return other
+
 
 def extract_features():
     files = [file for file in os.listdir(CLEANED_FILEPATH)]
@@ -703,7 +755,11 @@ def extract_features():
         if not out_filename.endswith('.obj'):
             out_filename = f'{out_filename}.obj'
 
+        y_output_filename = out_filename.split('.')[0] + '_y.obj'
+
         try:
+            if os.path.exists(out_filename) or os.path.exists(y_output_filename):
+                raise FileExistsError()
             open(out_filename, 'a').close()
             break
         except FileNotFoundError:
@@ -711,28 +767,71 @@ def extract_features():
             red_print(f'The path {os.path.normpath(out_filename)} could not be found\n')
         except PermissionError:
             clear_screen()
-            red_print('You do not have permission to write to that file.')
+            red_print('You do not have permission to write to that file.\n')
+        except FileExistsError:
+            clear_screen()
+            red_print('That output file already exists.\n')
         except Exception as e:
             clear_screen()
-            red_print(f'An error occurred with that file :( \n{e}')
+            red_print(f'An error occurred with that file :( \n{e}\n')
     
     clear_screen()
 
+    # Initialize y and q
+    # y holds our classes [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
+    # they map to [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    y = []
+
     # Initialize counters
     packets_analyzed = 0
+    samples_per_class = dict((packet_class, 0) for packet_class in CLASSES.values())
     features_extracted = 0
     with open(target_file_path, 'r') as target_file, open(out_filename, 'ab') as out_file:
         # Create a list of nibbles for each packet in target_file
         for line in target_file:
+            packet_bytes = line.split()[1]
+
+            packet_class = get_packet_class(packet_bytes)
+            if packet_class == -1:
+                return
+            if not samples_per_class[packet_class] < SAMPLES_PER_CLASS:
+                continue
+            
+            # Increment count and add to y
+            samples_per_class[packet_class] += 1
+            y.append(packet_class)
+
+            # Create X
             packets_analyzed += 1
-            nibbles = [let for let in line.split()[1][:NUM_FEATURES]]
+            nibbles = [let for let in packet_bytes[:NUM_FEATURES]]
+            # pad to NUM_FEATURES length
+            if len(nibbles) < NUM_FEATURES:
+                nibbles.extend([0] * (NUM_FEATURES-len(nibbles)))
+
             features_extracted += len(nibbles)
 
             # Convert to a ndarray and pickle to out file
             nibbles = np.array(nibbles)
             pickle.dump(nibbles, out_file)
+    
+    np_array_y = np.array(y)
 
-    green_print(f'Data from {target_filename} successfully pickled to {out_filename}')
+    with open(y_output_filename, 'wb') as target_file:
+        pickle.dump(np_array_y, target_file)
+
+    print('Packet class counts:')
+    not_enough_packets_warning = False
+    for packet_class, count in zip(*np.unique(np_array_y, return_counts=True)):
+        print(f'{dict(zip(CLASSES.values(), CLASSES.keys())).get(packet_class):.<40}{count}')
+        if count < SAMPLES_PER_CLASS:
+            not_enough_packets_warning = True
+    print()
+
+    if not_enough_packets_warning:
+        yellow_print('WARNING: One or more classes do not have enough packets!\n')
+
+    green_print(f'Data from {target_filename} successfully saved to {out_filename}')
+    green_print(f'Targets have been saved to {y_output_filename}')
     green_print(f'Analyzed {features_extracted} features from {packets_analyzed} packets!')
     input('\nPress enter to return to the main menu...')
     clear_screen()
