@@ -9,7 +9,6 @@ from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 from dataclasses import dataclass
 import platform
-import pickle
 
 # "Linux" or "Windows"
 # found when running the main function
@@ -112,11 +111,11 @@ CLASSES = {
     # 'ARP Reply' : 1,
     # 'ICMP Echo Request' : 2,
     # 'ICMP Echo Reply' : 3,
-    'TLS' : 4,
-    'HTTP' : 5,
-    'DNS' : 6,
-    'QUIC' : 7,
-    'Other' : 8
+    'TLS' : 0,
+    'HTTP' : 1,
+    'DNS' : 2,
+    'QUIC' : 3,
+    'Other' : 4
 }
 
 def green_print(msg: str) -> None:
@@ -325,6 +324,8 @@ def clean_captures():
             continue
         output_file = open(output_filepath, 'w')
 
+        # the following is for tshark capture files
+        # TODO detect if the .txt file is tshark or tcpdump, and add support for cleaning tcpdump captures
         byte_string = None
         prev_line = ''
         while True:
@@ -699,17 +700,17 @@ def get_packet_class(packet_bytes: str) -> int:
     if not other:
         red_print('No "Other" value present in classes!\n')
         return -1
-    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it echo reply or request
+    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it reply or request
         return CLASSES.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
-        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP
+        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP - echo reply or request
             return CLASSES.get(ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other'), other)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
             src_port_class = CLASSES.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != 8 else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+            return src_port_class if src_port_class != other else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
             src_port_class = CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != 8 else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+            return src_port_class if src_port_class != other else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
         else:  # neither TCP nor UDP
             return other
     else:  # IPv6 or something else
@@ -718,11 +719,11 @@ def get_packet_class(packet_bytes: str) -> int:
 
 def extract_features():
     files = [file for file in os.listdir(CLEANED_FILEPATH)]
-
     get_file_help = 'Choose one of the below files from which to extract features.\nYou can also enter the number corresponding to each file.\n'
     for i, file in enumerate(files):
         get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
     
+    # get input file
     while True:
         user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
 
@@ -748,14 +749,15 @@ def extract_features():
     
     target_file_path = os.path.join(CLEANED_FILEPATH, target_filename)
 
+    # get output file
     while True:
-        out_filename = get_user_input('Enter the relative path for the output file (.obj) file.', 'out.obj', str, None)
+        out_filename = get_user_input('Enter the relative path for the output file (.npy) file.', 'out.npy', str, None)
         
         out_filename.rstrip(os.path.sep)
-        if not out_filename.endswith('.obj'):
-            out_filename = f'{out_filename}.obj'
+        if not out_filename.endswith('.npy'):
+            out_filename = f'{out_filename}.npy'
 
-        y_output_filename = out_filename.split('.')[0] + '_y.obj'
+        y_output_filename = out_filename.split('.')[0] + '_y.npy'
 
         try:
             if os.path.exists(out_filename) or os.path.exists(y_output_filename):
@@ -777,10 +779,11 @@ def extract_features():
     
     clear_screen()
 
-    # Initialize y and q
+    # Initialize X, y and q
     # y holds our classes [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
     # they map to [0, 1, 2, 3, 4, 5, 6, 7, 8]
     y = []
+    X = []
 
     # Initialize counters
     packets_analyzed = 0
@@ -801,34 +804,38 @@ def extract_features():
             samples_per_class[packet_class] += 1
             y.append(packet_class)
 
-            # Create X
-            packets_analyzed += 1
-            nibbles = [let for let in packet_bytes[:NUM_FEATURES]]
+            # Create X and convert each hex to int value
+            nibbles = [int(let, 16) for let in packet_bytes[:NUM_FEATURES]]
             # pad to NUM_FEATURES length
             if len(nibbles) < NUM_FEATURES:
                 nibbles.extend([0] * (NUM_FEATURES-len(nibbles)))
-
+            
+            # increment counts
             features_extracted += len(nibbles)
+            packets_analyzed += 1
 
             # Convert to a ndarray and pickle to out file
-            nibbles = np.array(nibbles)
-            pickle.dump(nibbles, out_file)
+            X.append(nibbles)
     
-    np_array_y = np.array(y)
+    # convert x and y to ndarrays
+    y_arr = np.array(y, dtype=int)
+    X_arr = np.array(X, dtype=int)
 
-    with open(y_output_filename, 'wb') as target_file:
-        pickle.dump(np_array_y, target_file)
+    # save both X and y to files
+    np.save(y_output_filename, y_arr)
+    np.save(out_filename, X_arr)
 
     print('Packet class counts:')
     not_enough_packets_warning = False
-    for packet_class, count in zip(*np.unique(np_array_y, return_counts=True)):
+    for packet_class, count in samples_per_class.items():
+        if count == 0:
+            continue
         print(f'{dict(zip(CLASSES.values(), CLASSES.keys())).get(packet_class):.<40}{count}')
         if count < SAMPLES_PER_CLASS:
             not_enough_packets_warning = True
     print()
-
     if not_enough_packets_warning:
-        yellow_print('WARNING: One or more classes do not have enough packets!\n')
+        yellow_print(f'WARNING: One or more classes do not have enough packets ({SAMPLES_PER_CLASS})!\n')
 
     green_print(f'Data from {target_filename} successfully saved to {out_filename}')
     green_print(f'Targets have been saved to {y_output_filename}')
