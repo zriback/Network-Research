@@ -9,6 +9,7 @@ from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 from dataclasses import dataclass
 import platform
+from enum import Enum
 
 # "Linux" or "Windows"
 # found when running the main function
@@ -106,6 +107,15 @@ ICMP_TYPES = {
     '08' : 'ICMP Echo Request'
 }
 
+class PACKET_LAYERS(Enum):
+    ETHERNET = 1,
+    IPV4 = 2,
+    IPV6 = 3,
+    ARP = 4,
+    ICMP = 5,
+    TCP = 7,
+    UDP = 8
+
 CLASSES = {
     # 'ARP Request': 0,
     # 'ARP Reply' : 1,
@@ -154,6 +164,25 @@ get_dst_port = partial(get_header_field, loc=DST_PORT_LOC, length=2)
 get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
 get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 
+def redact_packet_data(data: str, loc: int, length: int, required_layers: list[int]):
+    if any(layer in get_packet_layers(data) for layer in required_layers):
+        return data[:loc*2] + '0'*length*2 + data[(loc+length)*2:]
+    else:
+        return data
+
+# Partial functions for redacting each header field
+redact_src_mac = partial(redact_packet_data, loc=SRC_MAC_LOC, length=6, required_layers=[PACKET_LAYERS.ETHERNET])
+redact_dst_mac = partial(redact_packet_data, loc=DST_MAC_LOC, length=6, required_layers=[PACKET_LAYERS.ETHERNET])
+redact_src_ip = partial(redact_packet_data, loc=SRC_IP_LOC, length=4, required_layers=[PACKET_LAYERS.IPV4])
+redact_dst_ip = partial(redact_packet_data, loc=DST_IP_LOC, length=4, required_layers=[PACKET_LAYERS.IPV4])
+redact_eth_type = partial(redact_packet_data, loc=ETH_TYPE_LOC, length=2, required_layers=[PACKET_LAYERS.ETHERNET])
+redact_ip_proto = partial(redact_packet_data, loc=IP_PROTO_LOC, length=1, required_layers=[PACKET_LAYERS.IPV4])
+redact_ipv6_proto = partial(redact_packet_data, loc=IPV6_NEXT_HEADER_LOC, length=1, required_layers=[PACKET_LAYERS.IPV6])
+redact_src_port = partial(redact_packet_data, loc=SRC_PORT_LOC, length=2, required_layers=[PACKET_LAYERS.TCP, PACKET_LAYERS.UDP])
+redact_dst_port = partial(redact_packet_data, loc=DST_PORT_LOC, length=2, required_layers=[PACKET_LAYERS.TCP, PACKET_LAYERS.UDP])
+redact_arp_opcode = partial(redact_packet_data, loc=ARP_OPCODE_LOC, length=2, required_layers=[PACKET_LAYERS.ARP])
+redact_icmp_type = partial(redact_packet_data, loc=ICMP_TYPE_LOC, length=1, required_layers=[PACKET_LAYERS.ICMP])
+
 
 def clear_screen():
     global os_name
@@ -175,7 +204,8 @@ def print_menu():
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
     output += '\t(3) Analyze Data\n'
-    output += '\t(4) Extract features'
+    output += '\t(4) Extract Features\n'
+    output += '\t(5) Redact Data'
     print(output)
 
 
@@ -211,6 +241,102 @@ def get_user_input(message: str, default, use_type: type, help=None):
         break
     print()
     return user_input
+
+
+def redact_data():
+    '''Gets user input for what data to redact from a user inputted cleaned capture'''
+    files = [file for file in os.listdir(CLEANED_FILEPATH)]
+
+    get_file_help = 'Choose from one of the below files to analyze.\nYou can also enter the number corresponding to the file.\n'
+    for i, file in enumerate(files):
+        get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
+    
+    while True:
+        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
+
+        # check if the user is inputting a number
+        try:
+            user_num_selection = int(user_selection)
+            # to execute this code, it must be a number
+            if user_num_selection < 0 or user_num_selection >= len(files):
+                red_print('That number is out of range.\n')
+                continue
+            target_filename = files[user_num_selection]
+            # found a valid file
+            break     
+        except ValueError:  # not a number. User is entering a file name
+            if not user_selection.endswith('.txt'):
+                user_selection = user_selection + '.txt'
+            if user_selection not in files:
+                red_print(f'Could not find the file {user_selection}\n')
+                continue
+            # found a valid file
+            target_filename = user_selection
+            break
+
+    default_output_name = target_filename[:target_filename.index('.txt')] + '_redacted.txt'
+    while True:
+        try:
+            output_filename = get_user_input('Enter the output file name', default_output_name, str, None)
+            if not output_filename.endswith('.txt'):
+                output_filename += '.txt'
+            if os.path.exists(output_filename):
+                raise FileExistsError()
+            break
+        except FileExistsError:
+            clear_screen()
+            red_print('That output file already exists\n')
+
+    # get function pointers for fields that should be redacted
+    redact_func_dict = {
+        0 : ['Source MAC', redact_src_mac],
+        1 : ['Destination MAC', redact_dst_mac],
+        2 : ['Source IP', redact_src_ip],
+        3 : ['Destination IP', redact_dst_ip],
+        4 : ['Ethernet Type', redact_eth_type],
+        5 : ['IP Protocol', redact_ip_proto],
+        6 : ['IPv6 Protocol', redact_ipv6_proto],
+        7 : ['Source Port', redact_src_port],
+        8 : ['Destination Port', redact_dst_port],
+        9 : ['ARP Opcode', redact_arp_opcode],
+        10 : ['ICMP Type', redact_icmp_type]
+    }
+    redact_func_list = []
+    help = 'Enter numbers separated by a comma to select the header fields to redact:\n'
+    for num, val in redact_func_dict.items():
+        field = val[0]
+        help += f'\t{num} - {field}\n'
+    
+    print(help)
+    user_input = get_user_input('Enter', None, str, help)
+    for num in user_input.split(','):
+        try:
+            num = int(num)
+        except ValueError:
+            clear_screen()
+            red_print('Non number entered...Quitting\n')
+            return None
+        func = redact_func_dict.get(num, None)
+        if func == None:
+            continue
+        redact_func_list.append(func[1])
+
+    target_file = open(os.path.join(CLEANED_FILEPATH, target_filename), 'r')
+    output_file = open(os.path.join(CLEANED_FILEPATH, output_filename), 'w')
+    for line in target_file:
+        line = line.split()
+        timestamp = line[0]
+        data = line[1]
+        for func in redact_func_list:
+            data = func(data)
+        output_file.write(f'{timestamp} {data}\n')
+    
+    target_file.close()
+    output_file.close()
+
+    # clear_screen()
+    green_print(f'Redacted data has been outputted to {output_filename}\n')
+    input('Press enter to return to the main menu...')
 
 
 def capture_traffic():
@@ -693,6 +819,30 @@ def print_text_analysis(capture_data: CaptureData) -> None:
     print_counts_dict(capture_data.other_type_counts)
     print()
 
+
+# returns a list of packet layers corresponding to PACKET_LAYERS enum
+# used for checking whether data at specific locations should be redacted
+def get_packet_layers(packet_bytes: str) -> list[int]:
+    layers = []
+    # for right now, just assume everything is ethernet
+    layers.append(PACKET_LAYERS.ETHERNET)
+
+    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':
+        layers.append(PACKET_LAYERS.ARP)
+    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':
+        layers.append(PACKET_LAYERS.IPV4)
+        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':
+            layers.append(PACKET_LAYERS.ICMP)
+        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
+            layers.append(PACKET_LAYERS.TCP)
+        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
+            layers.append(PACKET_LAYERS.UDP)
+    else:
+        layers.append(PACKET_LAYERS.IPV6)
+
+    return layers
+
+
 # returns packet class - our class are [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
 # this function returns [0, 1, 2, 3, 4, 5, 6, 7, 8] corresponding to each class
 def get_packet_class(packet_bytes: str) -> int:
@@ -882,6 +1032,8 @@ def main():
             analyze_data()
         elif user_input == 4:
             extract_features()
+        elif user_input == 5:
+            redact_data()
         else:
             clear_screen()
             red_print('Enter the number for a valid option\n')
