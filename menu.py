@@ -165,7 +165,7 @@ get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
 get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 
 def redact_packet_data(data: str, loc: int, length: int, required_layers: list[int]):
-    if any(layer in get_packet_layers(data) for layer in required_layers):
+    if any(layer in get_packet_layers(data) for layer in required_layers) and (loc+length)*2 <= len(data):
         return data[:loc*2] + '0'*length*2 + data[(loc+length)*2:]
     else:
         return data
@@ -309,6 +309,8 @@ def redact_data():
     
     print(help)
     user_input = get_user_input('Enter', None, str, help)
+    if user_input == 'all':
+        user_input = '1,2,3,4,5,6,7,8,9,10'
     for num in user_input.split(','):
         try:
             num = int(num)
@@ -327,9 +329,13 @@ def redact_data():
         line = line.split()
         timestamp = line[0]
         data = line[1]
+
+        # save the packet class before redacting and put it at the end of the line
+        packet_class = get_packet_class(data)
+
         for func in redact_func_list:
             data = func(data)
-        output_file.write(f'{timestamp} {data}\n')
+        output_file.write(f'{timestamp} {data} {packet_class}\n')
     
     target_file.close()
     output_file.close()
@@ -337,6 +343,7 @@ def redact_data():
     # clear_screen()
     green_print(f'Redacted data has been outputted to {output_filename}\n')
     input('Press enter to return to the main menu...')
+    clear_screen()
 
 
 def capture_traffic():
@@ -942,9 +949,15 @@ def extract_features():
     with open(target_file_path, 'r') as target_file, open(out_filename, 'ab') as out_file:
         # Create a list of nibbles for each packet in target_file
         for line in target_file:
-            packet_bytes = line.split()[1]
+            line_list = line.split()
+            packet_bytes = line_list[1]
+            if len(line_list) == 2:  # not redacted data, no class identifier added
+                packet_class = get_packet_class(packet_bytes)
+            elif len(line_list) == 3:  # is redacted data and identifier was added
+                packet_class = int(line_list[2])
+            else:
+                packet_class = -1
 
-            packet_class = get_packet_class(packet_bytes)
             if packet_class == -1:
                 return
             if not samples_per_class[packet_class] < SAMPLES_PER_CLASS:
