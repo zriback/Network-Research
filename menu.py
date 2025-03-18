@@ -243,22 +243,54 @@ def get_user_input(message: str, default, use_type: type, help=None):
     return user_input
 
 
-def redact_data():
-    '''Gets user input for what data to redact from a user inputted cleaned capture'''
-    files = [file for file in os.listdir(CLEANED_FILEPATH)]
+def get_new_file(message: str, default: str, location: str = None):
+    extension = '.' + default.split('.')[-1]
+    while True:
+        out_filename = get_user_input(message, default, str, None)
+        
+        out_filename.rstrip(os.path.sep)
+        if not out_filename.endswith(extension):
+            out_filename = f'{out_filename}{extension}'
 
-    get_file_help = 'Choose from one of the below files to analyze.\nYou can also enter the number corresponding to the file.\n'
+        if location:
+            out_filename = os.path.join(location, out_filename)
+        try:
+            if os.path.exists(out_filename):
+                raise FileExistsError()
+            open(out_filename, 'a').close()
+            break
+        except FileNotFoundError:
+            clear_screen()
+            red_print(f'The path {os.path.normpath(out_filename)} could not be found\n')
+        except PermissionError:
+            clear_screen()
+            red_print('You do not have permission to write to that file.\n')
+        except FileExistsError:
+            clear_screen()
+            red_print('That output file already exists.\n')
+        except Exception as e:
+            clear_screen()
+            red_print(f'An error occurred with that file :( \n{e}\n')
+    
+    clear_screen()
+    return out_filename
+
+
+def get_existing_file(message: str, default: str, location: str):
+    files = os.listdir(location)
+    get_file_help = 'Choose one of the below files.\nYou can also enter the number corresponding to each file.\n'
     for i, file in enumerate(files):
         get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
     
     while True:
-        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
+        user_selection = get_user_input(message, default, str, get_file_help)
 
         # check if the user is inputting a number
         try:
             user_num_selection = int(user_selection)
             # to execute this code, it must be a number
             if user_num_selection < 0 or user_num_selection >= len(files):
+                clear_screen()
                 red_print('That number is out of range.\n')
                 continue
             target_filename = files[user_num_selection]
@@ -268,24 +300,22 @@ def redact_data():
             if not user_selection.endswith('.txt'):
                 user_selection = user_selection + '.txt'
             if user_selection not in files:
+                clear_screen()
                 red_print(f'Could not find the file {user_selection}\n')
                 continue
             # found a valid file
             target_filename = user_selection
             break
+    
+    target_file_path = os.path.join(location, target_filename)
+    return target_file_path
 
-    default_output_name = target_filename[:target_filename.index('.txt')] + '_redacted.txt'
-    while True:
-        try:
-            output_filename = get_user_input('Enter the output file name', default_output_name, str, None)
-            if not output_filename.endswith('.txt'):
-                output_filename += '.txt'
-            if os.path.exists(output_filename):
-                raise FileExistsError()
-            break
-        except FileExistsError:
-            clear_screen()
-            red_print('That output file already exists\n')
+
+def redact_data():
+    '''Gets user input for what data to redact from a user inputted cleaned capture'''
+    target_filename = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
+    target_basename = os.path.basename(target_filename)
+    output_filename = get_new_file('Enter the output file name', target_basename[:target_basename.index('.txt')] + '_redacted.txt', CLEANED_FILEPATH)
 
     # get function pointers for fields that should be redacted
     redact_func_dict = {
@@ -323,22 +353,19 @@ def redact_data():
             continue
         redact_func_list.append(func[1])
 
-    target_file = open(os.path.join(CLEANED_FILEPATH, target_filename), 'r')
-    output_file = open(os.path.join(CLEANED_FILEPATH, output_filename), 'w')
-    for line in target_file:
-        line = line.split()
-        timestamp = line[0]
-        data = line[1]
+    print('target filename is', target_filename)
+    with open(target_filename, 'r') as target_file, open(output_filename, 'w') as output_file:
+        for line in target_file:
+            line = line.split()
+            timestamp = line[0]
+            data = line[1]
 
-        # save the packet class before redacting and put it at the end of the line
-        packet_class = get_packet_class(data)
+            # save the packet class before redacting and put it at the end of the line
+            packet_class = get_packet_class(data)
 
-        for func in redact_func_list:
-            data = func(data)
-        output_file.write(f'{timestamp} {data} {packet_class}\n')
-    
-    target_file.close()
-    output_file.close()
+            for func in redact_func_list:
+                data = func(data)
+            output_file.write(f'{timestamp} {data} {packet_class}\n')
 
     # clear_screen()
     green_print(f'Redacted data has been outputted to {output_filename}\n')
@@ -626,38 +653,8 @@ def get_capture_data(filename: str):
 
 
 def analyze_data():
-    files = [file for file in os.listdir(CLEANED_FILEPATH)]
-
-    get_file_help = 'Choose from one of the below files to analyze.\nYou can also enter the number corresponding to the file.\n'
-    for i, file in enumerate(files):
-        get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
-    
-    while True:
-        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
-
-        # check if the user is inputting a number
-        try:
-            user_num_selection = int(user_selection)
-            # to execute this code, it must be a number
-            if user_num_selection < 0 or user_num_selection >= len(files):
-                red_print('That number is out of range.\n')
-                continue
-            target_file = files[user_num_selection]
-            # found a valid file
-            break     
-        except ValueError:  # not a number. User is entering a file name
-            if not user_selection.endswith('.txt'):
-                user_selection = user_selection + '.txt'
-            if user_selection not in files:
-                red_print(f'Could not find the file {user_selection}\n')
-                continue
-            # found a valid file
-            target_file = user_selection
-            break
-
-    clear_screen()
-
-    target_file_path = os.path.join(CLEANED_FILEPATH, target_file)
+    target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
+    target_file = os.path.basename(target_file_path)
     capture_data = get_capture_data(target_file_path)
 
     if capture_data is None:
@@ -875,66 +872,10 @@ def get_packet_class(packet_bytes: str) -> int:
 
 
 def extract_features():
-    files = [file for file in os.listdir(CLEANED_FILEPATH)]
-    get_file_help = 'Choose one of the below files from which to extract features.\nYou can also enter the number corresponding to each file.\n'
-    for i, file in enumerate(files):
-        get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
-    
-    # get input file
-    while True:
-        user_selection = get_user_input('Enter the name or number of the file to analyze. Use "help" for help.', None, str, get_file_help)
+    target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
 
-        # check if the user is inputting a number
-        try:
-            user_num_selection = int(user_selection)
-            # to execute this code, it must be a number
-            if user_num_selection < 0 or user_num_selection >= len(files):
-                red_print('That number is out of range.\n')
-                continue
-            target_filename = files[user_num_selection]
-            # found a valid file
-            break     
-        except ValueError:  # not a number. User is entering a file name
-            if not user_selection.endswith('.txt'):
-                user_selection = user_selection + '.txt'
-            if user_selection not in files:
-                red_print(f'Could not find the file {user_selection}\n')
-                continue
-            # found a valid file
-            target_filename = user_selection
-            break
-    
-    target_file_path = os.path.join(CLEANED_FILEPATH, target_filename)
-
-    # get output file
-    while True:
-        out_filename = get_user_input('Enter the relative path for the output file (.npy) file.', 'out.npy', str, None)
-        
-        out_filename.rstrip(os.path.sep)
-        if not out_filename.endswith('.npy'):
-            out_filename = f'{out_filename}.npy'
-
-        y_output_filename = out_filename.split('.')[0] + '_y.npy'
-
-        try:
-            if os.path.exists(out_filename) or os.path.exists(y_output_filename):
-                raise FileExistsError()
-            open(out_filename, 'a').close()
-            break
-        except FileNotFoundError:
-            clear_screen()
-            red_print(f'The path {os.path.normpath(out_filename)} could not be found\n')
-        except PermissionError:
-            clear_screen()
-            red_print('You do not have permission to write to that file.\n')
-        except FileExistsError:
-            clear_screen()
-            red_print('That output file already exists.\n')
-        except Exception as e:
-            clear_screen()
-            red_print(f'An error occurred with that file :( \n{e}\n')
-    
-    clear_screen()
+    out_filename = get_new_file('Enter the relative path for then output (.npy) file', 'out.npy')
+    y_out_filename = out_filename.split('.')[0] + '_y.npy'
 
     # Initialize X, y and q
     # y holds our classes [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
@@ -946,7 +887,7 @@ def extract_features():
     packets_analyzed = 0
     samples_per_class = dict((packet_class, 0) for packet_class in CLASSES.values())
     features_extracted = 0
-    with open(target_file_path, 'r') as target_file, open(out_filename, 'ab') as out_file:
+    with open(target_file_path, 'r') as target_file:
         # Create a list of nibbles for each packet in target_file
         for line in target_file:
             line_list = line.split()
@@ -985,7 +926,7 @@ def extract_features():
     X_arr = np.array(X, dtype=int)
 
     # save both X and y to files
-    np.save(y_output_filename, y_arr)
+    np.save(y_out_filename, y_arr)
     np.save(out_filename, X_arr)
 
     print('Packet class counts:')
@@ -1000,8 +941,8 @@ def extract_features():
     if not_enough_packets_warning:
         yellow_print(f'WARNING: One or more classes do not have enough packets ({SAMPLES_PER_CLASS})!\n')
 
-    green_print(f'Data from {target_filename} successfully saved to {out_filename}')
-    green_print(f'Targets have been saved to {y_output_filename}')
+    green_print(f'Data from {target_file_path} successfully saved to {out_filename}')
+    green_print(f'Targets have been saved to {y_out_filename}')
     green_print(f'Analyzed {features_extracted} features from {packets_analyzed} packets!')
     input('\nPress enter to return to the main menu...')
     clear_screen()
