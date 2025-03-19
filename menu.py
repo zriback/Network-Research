@@ -43,6 +43,7 @@ CLEANED_FILEPATH = 'cleaned'
 # Number of nibbles to extract from each packet as a feature from each packet
 # The first NUM_FEATURES/2 bytes are extracted from each packet
 NUM_FEATURES = 128
+CNN_FEATURES_DIMENSION = 14
 
 SAMPLES_PER_CLASS = 10000
 
@@ -204,8 +205,9 @@ def print_menu():
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
     output += '\t(3) Analyze Data\n'
-    output += '\t(4) Extract Features\n'
-    output += '\t(5) Redact Data'
+    output += '\t(4) Redact Data\n'
+    output += '\t(5) Extract Features\n'
+    output += '\t(6) Extract 2D Features'
     print(output)
 
 
@@ -871,13 +873,18 @@ def get_packet_class(packet_bytes: str) -> int:
         return other
 
 
-def extract_features():
+def extract_features(X_2D = False):
+    if not X_2D:
+        num_features = NUM_FEATURES
+    else:
+        num_features = CNN_FEATURES_DIMENSION*CNN_FEATURES_DIMENSION
+
     target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
 
-    out_filename = get_new_file('Enter the relative path for then output (.npy) file', 'out.npy')
+    out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy')
     y_out_filename = out_filename.split('.')[0] + '_y.npy'
 
-    # Initialize X, y and q
+    # Initialize X, y
     # y holds our classes [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
     # they map to [0, 1, 2, 3, 4, 5, 6, 7, 8]
     y = []
@@ -909,17 +916,22 @@ def extract_features():
             y.append(packet_class)
 
             # Create X and convert each hex to int value
-            nibbles = [int(let, 16) for let in packet_bytes[:NUM_FEATURES]]
+            nibbles = [int(let, 16) for let in packet_bytes[:num_features]]
             # pad to NUM_FEATURES length
-            if len(nibbles) < NUM_FEATURES:
-                nibbles.extend([0] * (NUM_FEATURES-len(nibbles)))
+            if len(nibbles) < num_features:
+                nibbles.extend([0] * (num_features-len(nibbles)))
             
             # increment counts
             features_extracted += len(nibbles)
             packets_analyzed += 1
 
-            # Convert to a ndarray and pickle to out file
-            X.append(nibbles)
+            # append to our X data structure
+            # if we are outputting in 2D, then convert it to that format before appending
+            if not X_2D:
+                X.append(nibbles)
+            else:
+                nibbles_2d = [nibbles[i*CNN_FEATURES_DIMENSION:(i+1)*CNN_FEATURES_DIMENSION] for i in range(CNN_FEATURES_DIMENSION)]
+                X.append(nibbles_2d)
     
     # convert x and y to ndarrays
     y_arr = np.array(y, dtype=int)
@@ -985,9 +997,11 @@ def main():
         elif user_input == 3:
             analyze_data()
         elif user_input == 4:
-            extract_features()
-        elif user_input == 5:
             redact_data()
+        elif user_input == 5:
+            extract_features()
+        elif user_input == 6:
+            extract_features(X_2D=True)
         else:
             clear_screen()
             red_print('Enter the number for a valid option\n')
