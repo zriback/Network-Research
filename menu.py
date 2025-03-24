@@ -114,19 +114,19 @@ class PACKET_LAYERS(Enum):
     IPV6 = 3,
     ARP = 4,
     ICMP = 5,
-    TCP = 7,
-    UDP = 8
+    TCP = 6,
+    UDP = 7
 
 CLASSES = {
     # 'ARP Request': 0,
     # 'ARP Reply' : 1,
-    # 'ICMP Echo Request' : 2,
-    # 'ICMP Echo Reply' : 3,
-    'TLS' : 0,
-    'HTTP' : 1,
-    'DNS' : 2,
-    'QUIC' : 3,
-    'Other' : 4
+    'ICMP Echo Request' : 0,
+    'ICMP Echo Reply' : 1,
+    'TLS' : 2,
+    'HTTP' : 3,
+    'DNS' : 4,
+    'QUIC' : 5,
+    'Other' : 6
 }
 
 def green_print(msg: str) -> None:
@@ -207,7 +207,8 @@ def print_menu():
     output += '\t(3) Analyze Data\n'
     output += '\t(4) Redact Data\n'
     output += '\t(5) Extract Features\n'
-    output += '\t(6) Extract 2D Features'
+    output += '\t(6) Extract 2D Features\n'
+    output += '\t(7) Combine Cleaned Captures'
     print(output)
 
 
@@ -355,7 +356,6 @@ def redact_data():
             continue
         redact_func_list.append(func[1])
 
-    print('target filename is', target_filename)
     with open(target_filename, 'r') as target_file, open(output_filename, 'w') as output_file:
         for line in target_file:
             line = line.split()
@@ -451,6 +451,35 @@ def capture_traffic():
     input('Press enter to return to the main menu...')
     clear_screen()
     print()
+
+
+def combine_cleaned_captures():
+    while True:
+        first_file = get_existing_file('Enter the first file. Use "help" for help', None, CLEANED_FILEPATH)
+        second_file = get_existing_file('Enter the second file. Use "help" for help', None, CLEANED_FILEPATH)
+        if first_file == second_file:
+            clear_screen()
+            red_print('The two files cannot be the same!\n')
+            continue
+        # Might want to put a check here to see if only one has been redacted 
+        break
+    
+    output_file = get_new_file('Enter an output file name', 'combined.txt', CLEANED_FILEPATH)
+
+    with open(first_file, 'r') as first, open(second_file, 'r') as second, open(output_file, 'w') as out:
+        first_lines_count = 0
+        second_lines_count = 0
+        for line in first:
+            out.write(line)
+            first_lines_count += 1
+        for line in second:
+            out.write(line)
+            second_lines_count += 1
+    green_print(f'Read {first_lines_count} packets from {first_file}')
+    green_print(f'Read {second_lines_count} packets from {second_file}')
+    green_print(f'Wrote {first_lines_count+second_lines_count} packets to {output_file}')
+    input('Press enter to return to the main menu...')
+    clear_screen()
 
 
 def clean_captures():
@@ -1002,6 +1031,8 @@ def main():
             extract_features()
         elif user_input == 6:
             extract_features(X_2D=True)
+        elif user_input == 7:
+            combine_cleaned_captures()
         else:
             clear_screen()
             red_print('Enter the number for a valid option\n')
