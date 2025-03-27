@@ -1,3 +1,4 @@
 captures/
 cleaned/
 *.obj
+*.npy
