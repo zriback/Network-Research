@@ -1,6 +1,6 @@
 # DNSExfiltrator
 
-This code is from the following repository. It contains much more in-depth documentation.
+The bulk of the DNS exfiltration code is from this repository.
 
 https://github.com/Arno0x/DNSExfiltrator
 
@@ -34,7 +34,7 @@ The setup for this is detailed below.
 
 ## Added Details
 
-In order to function, the C2 server side python scripts needs to be able to edit the message.c2.netres.com text record. If you are trying to set this up yourself and getting a ```SERVFAIL```, check ```journalctl -xe``` for the error. It might be that BIND does not have permissions in the zone directory to create the db.c2.netres.com.jrl file, which it needs in order to edit the DNS records.
+In order to function, the C2 server side python scripts needs to be able to edit the message.c2.netres.com text record. If you are trying to set this up yourself and getting a ```SERVFAIL```, check ```journalctl -xe``` for the error. It might be that BIND does not have permissions in the zone directory to create the db.c2.netres.com.jnl file, which it needs in order to edit the DNS records.
 
 Additionally, currently there is no way for the client to send updates back to the server (i.e. command run successfully or simple command output). This is a work in progress. To properly read commands, the the client and server both operate on 10 seconds sleep timers. The server puts its command into the message.c2.netres.com text record for only 10 seconds before clearing it. Conversely, the client reads from this text record once every 10 seconds. This allows semi-reliable communcation of the commands without full two-way communication.
 
