@@ -1,42 +1,57 @@
+"""
+This file is a menu program with the following capabilities as they relate to network data capture and machine learning
+- Network traffic capture
+- Clean captures
+- Analyze data
+- Redact data
+- Extract features
+- Extract 2D features
+- Combine cleaned captures
+"""
+
 import os
 import subprocess as sp
 import time
-import ifaddr
 import re
 from functools import partial
+import platform
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import numpy as np
-from dataclasses import dataclass
-import platform
-from enum import Enum
+import ifaddr
 
 # "Linux" or "Windows"
 # found when running the main function
-os_name = ''
+OS_NAME = ''
 
 @dataclass
 class CaptureData:
+    """
+    Dataclass containing all interesting information about a network packet capture
+    """
     num_packets: int = 0
     eth_num: int = 0
     ip_num: int = 0
     tcp_num: int = 0
     udp_num: int = 0
     average_length: float = 0
-    src_mac_counts: dict = None
-    dst_mac_counts: dict = None
-    src_ip_counts: dict = None
-    dst_ip_counts: dict = None
-    eth_type_counts: dict = None
-    ip_proto_counts: dict = None
-    tcp_src_port_counts: dict = None
-    tcp_dst_port_counts: dict = None
-    udp_src_port_counts: dict = None
-    udp_dst_port_counts: dict = None
-    other_type_counts: dict = None
-    microsec_times: list = None
+    src_mac_counts: Optional[dict] = None
+    dst_mac_counts: Optional[dict] = None
+    src_ip_counts: Optional[dict] = None
+    dst_ip_counts: Optional[dict] = None
+    eth_type_counts: Optional[dict] = None
+    ip_proto_counts: Optional[dict] = None
+    tcp_src_port_counts: Optional[dict] = None
+    tcp_dst_port_counts: Optional[dict] = None
+    udp_src_port_counts: Optional[dict] = None
+    udp_dst_port_counts: Optional[dict] = None
+    other_type_counts: Optional[dict] = None
+    microsec_times: list = field(default_factory=list)
 
-
+# File paths for directories containing raw captures and cleaned files
 CAPTURES_FILEPATH = 'captures'
 CLEANED_FILEPATH = 'cleaned'
 
@@ -108,13 +123,16 @@ ICMP_TYPES = {
     '08' : 'ICMP Echo Request'
 }
 
-class PACKET_LAYERS(Enum):
-    ETHERNET = 1,
-    IPV4 = 2,
-    IPV6 = 3,
-    ARP = 4,
-    ICMP = 5,
-    TCP = 6,
+class PacketLayers(Enum):
+    """
+    Enum containing all layers we are interested in
+    """
+    ETHERNET = 1
+    IPV4 = 2
+    IPV6 = 3
+    ARP = 4
+    ICMP = 5
+    TCP = 6
     UDP = 7
 
 CLASSES = {
@@ -130,21 +148,24 @@ CLASSES = {
 }
 
 def green_print(msg: str) -> None:
+    """Convenient function for printing green text"""
     print(GREEN_COLOR + msg + DEFAULT_COLOR)
 
 def red_print(msg: str) -> None:
+    """Convenient function for printing red text"""
     print(RED_COLOR + msg + DEFAULT_COLOR)
 
 def yellow_print(msg: str) -> None:
+    """Convenient function for printing yellow text"""
     print(YELLOW_COLOR + msg + DEFAULT_COLOR)
 
 
-def get_printable_ip(ip: str) -> str:
+def get_printable_ip(ip: str) -> str | None:
     if len(ip) != 4*2:
         return None
     return '.'.join(str(int(''.join(pair), 16)) for pair in zip(*[iter(ip)]*2))
 
-def get_printable_mac(mac: str) -> str:
+def get_printable_mac(mac: str) -> str | None:
     if len(mac) != 6*2:
         return None
     return ':'.join(''.join(pair) for pair in zip(*[iter(mac)]*2))
@@ -165,7 +186,7 @@ get_dst_port = partial(get_header_field, loc=DST_PORT_LOC, length=2)
 get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
 get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 
-def redact_packet_data(data: str, loc: int, length: int, required_layers: list[int]):
+def redact_packet_data(data: str, loc: int, length: int, required_layers: list[PACKET_LAYERS]):
     if any(layer in get_packet_layers(data) for layer in required_layers) and (loc+length)*2 <= len(data):
         return data[:loc*2] + '0'*length*2 + data[(loc+length)*2:]
     else:
@@ -186,14 +207,14 @@ redact_icmp_type = partial(redact_packet_data, loc=ICMP_TYPE_LOC, length=1, requ
 
 
 def clear_screen():
-    global os_name
-    if os_name == 'Windows':
+    global OS_NAME
+    if OS_NAME == 'Windows':
         os.system('cls')
     else:  # 'Linux'
         os.system('clear')
 
 
-def run_cmd(command: str) -> str:
+def run_cmd(command: str) -> bytes:
     '''Runs the given command. Returns the output'''
     command_process = sp.Popen(command.split(), stdout=sp.PIPE, stderr=sp.PIPE)
     output, error = command_process.communicate()
@@ -212,7 +233,7 @@ def print_menu():
     print(output)
 
 
-def get_user_input(message: str, default, use_type: type, help=None):
+def get_user_input(message: str, default: str | None, use_type: type, help=None):
     '''Get and return user input. Automatically ensures no errors and supports default options
     default must be the same type as is passed in use_type
     if default is "use timestamp" it will return the current timestamp'''
@@ -246,7 +267,7 @@ def get_user_input(message: str, default, use_type: type, help=None):
     return user_input
 
 
-def get_new_file(message: str, default: str, location: str = None):
+def get_new_file(message: str, default: str, location: str | None = None):
     extension = '.' + default.split('.')[-1]
     while True:
         out_filename = get_user_input(message, default, str, None)
@@ -279,7 +300,7 @@ def get_new_file(message: str, default: str, location: str = None):
     return out_filename
 
 
-def get_existing_file(message: str, default: str, location: str):
+def get_existing_file(message: str, default: str | None, location: str):
     files = os.listdir(location)
     get_file_help = 'Choose one of the below files.\nYou can also enter the number corresponding to each file.\n'
     for i, file in enumerate(files):
@@ -419,6 +440,7 @@ def capture_traffic():
     try:
         tshark_process = sp.Popen(tshark_command_list, stdout=sp.PIPE, stderr=sp.PIPE)
     except FileNotFoundError:
+        clear_screen()
         red_print('tshark could not be found. Perhaps it needs to be installed or added to PATH?')
         red_print('Kicking you back to the main menu...\n')
         return
@@ -713,8 +735,12 @@ def analyze_data():
 
     # 0,0 (Ethernet type)
     this_ax = ax[0,0]
-    labels = list(capture_data.eth_type_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.eth_type_counts.values())[:MAX_BAR_CHART_BARS]
+    if capture_data.eth_type_counts is not None:
+        labels = list(capture_data.eth_type_counts.keys())[:MAX_BAR_CHART_BARS]
+        counts = list(capture_data.eth_type_counts.values())[:MAX_BAR_CHART_BARS]
+    else:
+        labels = []
+        counts = []
     this_ax.bar(labels, counts)
     this_ax.set_title('Ethernet Type Counts')
     this_ax.set_xlabel('Encapsulated Type')
@@ -722,8 +748,12 @@ def analyze_data():
 
     # 0,1 (IP Proto Types)
     this_ax = ax[0,1]
-    labels = list(capture_data.ip_proto_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.ip_proto_counts.values())[:MAX_BAR_CHART_BARS]
+    if capture_data.ip_proto_counts is not None:
+        labels = list(capture_data.ip_proto_counts.keys())[:MAX_BAR_CHART_BARS]
+        counts = list(capture_data.ip_proto_counts.values())[:MAX_BAR_CHART_BARS]
+    else:
+        labels = []
+        counts = []
     this_ax.bar(labels, counts)
     this_ax.set_title('IP Protocol Type Counts')
     this_ax.set_xlabel('Encapsulated Type')
@@ -731,8 +761,12 @@ def analyze_data():
 
     # 1,0 (src mac counts)
     this_ax = ax[1,0]
-    labels = list(capture_data.src_mac_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.src_mac_counts.values())[:MAX_BAR_CHART_BARS]
+    if capture_data.src_mac_counts is not None:
+        labels = list(capture_data.src_mac_counts.keys())[:MAX_BAR_CHART_BARS]
+        counts = list(capture_data.src_mac_counts.values())[:MAX_BAR_CHART_BARS]
+    else:
+        labels = []
+        counts = []
     this_ax.bar(labels, counts)
     this_ax.set_title('Source MAC Counts')
     this_ax.set_xlabel('Source MAC')
@@ -741,8 +775,12 @@ def analyze_data():
 
     # 1,1 (src IP counts)
     this_ax = ax[1,1]
-    labels = list(capture_data.src_ip_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.src_ip_counts.values())[:MAX_BAR_CHART_BARS]
+    if capture_data.src_ip_counts is not None:
+        labels = list(capture_data.src_ip_counts.keys())[:MAX_BAR_CHART_BARS]
+        counts = list(capture_data.src_ip_counts.values())[:MAX_BAR_CHART_BARS]
+    else:
+        labels = []
+        counts = []
     this_ax.bar(labels, counts)
     this_ax.set_title('Source IP Counts')
     this_ax.set_xlabel('Source IP')
@@ -751,8 +789,12 @@ def analyze_data():
 
     # 0,2 (src port counts)
     this_ax = ax[0,2]
-    labels = list(capture_data.tcp_src_port_counts.keys())[:MAX_BAR_CHART_BARS]
-    counts = list(capture_data.tcp_src_port_counts.values())[:MAX_BAR_CHART_BARS]
+    if capture_data.tcp_src_port_counts is not None:
+        labels = list(capture_data.tcp_src_port_counts.keys())[:MAX_BAR_CHART_BARS]
+        counts = list(capture_data.tcp_src_port_counts.values())[:MAX_BAR_CHART_BARS]
+    else:
+        labels = []
+        counts = []
     this_ax.bar(labels, counts)
     this_ax.set_title('Source Port Counts')
     this_ax.set_xlabel('Source Port')
@@ -799,8 +841,8 @@ def analyze_data():
     print()
 
 
-def print_counts_dict(counts_dict: dict):
-    if len(counts_dict) == 0:
+def print_counts_dict(counts_dict: dict | None):
+    if counts_dict is None or len(counts_dict) == 0:
         print('No data collected for this statistic')
         return
     extra_values = 0
@@ -892,10 +934,10 @@ def get_packet_class(packet_bytes: str) -> int:
             return CLASSES.get(ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other'), other)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
             src_port_class = CLASSES.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != other else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+            return src_port_class if src_port_class != other else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
             src_port_class = CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != other else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)), other)
+            return src_port_class if src_port_class != other else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
         else:  # neither TCP nor UDP
             return other
     else:  # IPv6 or something else
@@ -921,7 +963,7 @@ def extract_features(X_2D = False):
 
     # Initialize counters
     packets_analyzed = 0
-    samples_per_class = dict((packet_class, 0) for packet_class in CLASSES.values())
+    samples_per_class = {packet_class: 0 for packet_class in CLASSES.values()}
     features_extracted = 0
     with open(target_file_path, 'r') as target_file:
         # Create a list of nibbles for each packet in target_file
@@ -961,7 +1003,7 @@ def extract_features(X_2D = False):
             else:
                 nibbles_2d = [nibbles[i*CNN_FEATURES_DIMENSION:(i+1)*CNN_FEATURES_DIMENSION] for i in range(CNN_FEATURES_DIMENSION)]
                 X.append(nibbles_2d)
-    
+
     # convert x and y to ndarrays
     y_arr = np.array(y, dtype=int)
     X_arr = np.array(X, dtype=int)
@@ -991,12 +1033,12 @@ def extract_features(X_2D = False):
 
 def main():
     # get the operating system
-    global os_name
-    os_name = platform.system()
-    if os_name == 'Windows' or os_name == 'Linux':
-        green_print(f'Detected running on {os_name} system!')
+    global OS_NAME
+    OS_NAME = platform.system()
+    if OS_NAME == 'Windows' or OS_NAME == 'Linux':
+        green_print(f'Detected running on {OS_NAME} system!')
     else:
-        red_print(f'Detected running on {os_name} system which is not supported.')
+        red_print(f'Detected running on {OS_NAME} system which is not supported.')
         exit()
     
     # check that captures and cleaned file paths exist
