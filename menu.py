@@ -1,5 +1,6 @@
 """
-This file is a menu program with the following capabilities as they relate to network data capture and machine learning
+This file is a menu program with the following capabilities as they relate to network data capture
+and machine learning
 - Network traffic capture
 - Clean captures
 - Analyze data
@@ -9,6 +10,7 @@ This file is a menu program with the following capabilities as they relate to ne
 - Combine cleaned captures
 """
 
+import sys
 import os
 import subprocess as sp
 import time
@@ -24,8 +26,7 @@ import numpy as np
 import ifaddr
 
 # "Linux" or "Windows"
-# found when running the main function
-OS_NAME = ''
+OS_NAME = platform.system()
 
 @dataclass
 class CaptureData:
@@ -161,16 +162,19 @@ def yellow_print(msg: str) -> None:
 
 
 def get_printable_ip(ip: str) -> str | None:
+    """Convenient function for getting printable IP address from hex bytes"""
     if len(ip) != 4*2:
         return None
     return '.'.join(str(int(''.join(pair), 16)) for pair in zip(*[iter(ip)]*2))
 
 def get_printable_mac(mac: str) -> str | None:
+    """Convenient function for getting printable MAC address from hex bytes"""
     if len(mac) != 6*2:
         return None
     return ':'.join(''.join(pair) for pair in zip(*[iter(mac)]*2))
 
 def get_header_field(data: str, loc: int, length: int) -> str:
+    """Gets bytes of specified length from specified location from the data"""
     return data[loc*2:(loc+length)*2]
 
 # Partial functions for getting each header field
@@ -186,28 +190,29 @@ get_dst_port = partial(get_header_field, loc=DST_PORT_LOC, length=2)
 get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
 get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 
-def redact_packet_data(data: str, loc: int, length: int, required_layers: list[PACKET_LAYERS]):
+def redact_packet_data(data: str, loc: int, length: int, required_layers: list[PacketLayers]):
+    """Convenient function for replacing specified bytes with"""
     if any(layer in get_packet_layers(data) for layer in required_layers) and (loc+length)*2 <= len(data):
         return data[:loc*2] + '0'*length*2 + data[(loc+length)*2:]
     else:
         return data
 
 # Partial functions for redacting each header field
-redact_src_mac = partial(redact_packet_data, loc=SRC_MAC_LOC, length=6, required_layers=[PACKET_LAYERS.ETHERNET])
-redact_dst_mac = partial(redact_packet_data, loc=DST_MAC_LOC, length=6, required_layers=[PACKET_LAYERS.ETHERNET])
-redact_src_ip = partial(redact_packet_data, loc=SRC_IP_LOC, length=4, required_layers=[PACKET_LAYERS.IPV4])
-redact_dst_ip = partial(redact_packet_data, loc=DST_IP_LOC, length=4, required_layers=[PACKET_LAYERS.IPV4])
-redact_eth_type = partial(redact_packet_data, loc=ETH_TYPE_LOC, length=2, required_layers=[PACKET_LAYERS.ETHERNET])
-redact_ip_proto = partial(redact_packet_data, loc=IP_PROTO_LOC, length=1, required_layers=[PACKET_LAYERS.IPV4])
-redact_ipv6_proto = partial(redact_packet_data, loc=IPV6_NEXT_HEADER_LOC, length=1, required_layers=[PACKET_LAYERS.IPV6])
-redact_src_port = partial(redact_packet_data, loc=SRC_PORT_LOC, length=2, required_layers=[PACKET_LAYERS.TCP, PACKET_LAYERS.UDP])
-redact_dst_port = partial(redact_packet_data, loc=DST_PORT_LOC, length=2, required_layers=[PACKET_LAYERS.TCP, PACKET_LAYERS.UDP])
-redact_arp_opcode = partial(redact_packet_data, loc=ARP_OPCODE_LOC, length=2, required_layers=[PACKET_LAYERS.ARP])
-redact_icmp_type = partial(redact_packet_data, loc=ICMP_TYPE_LOC, length=1, required_layers=[PACKET_LAYERS.ICMP])
+redact_src_mac = partial(redact_packet_data, loc=SRC_MAC_LOC, length=6, required_layers=[PacketLayers.ETHERNET])
+redact_dst_mac = partial(redact_packet_data, loc=DST_MAC_LOC, length=6, required_layers=[PacketLayers.ETHERNET])
+redact_src_ip = partial(redact_packet_data, loc=SRC_IP_LOC, length=4, required_layers=[PacketLayers.IPV4])
+redact_dst_ip = partial(redact_packet_data, loc=DST_IP_LOC, length=4, required_layers=[PacketLayers.IPV4])
+redact_eth_type = partial(redact_packet_data, loc=ETH_TYPE_LOC, length=2, required_layers=[PacketLayers.ETHERNET])
+redact_ip_proto = partial(redact_packet_data, loc=IP_PROTO_LOC, length=1, required_layers=[PacketLayers.IPV4])
+redact_ipv6_proto = partial(redact_packet_data, loc=IPV6_NEXT_HEADER_LOC, length=1, required_layers=[PacketLayers.IPV6])
+redact_src_port = partial(redact_packet_data, loc=SRC_PORT_LOC, length=2, required_layers=[PacketLayers.TCP, PacketLayers.UDP])
+redact_dst_port = partial(redact_packet_data, loc=DST_PORT_LOC, length=2, required_layers=[PacketLayers.TCP, PacketLayers.UDP])
+redact_arp_opcode = partial(redact_packet_data, loc=ARP_OPCODE_LOC, length=2, required_layers=[PacketLayers.ARP])
+redact_icmp_type = partial(redact_packet_data, loc=ICMP_TYPE_LOC, length=1, required_layers=[PacketLayers.ICMP])
 
 
 def clear_screen():
-    global OS_NAME
+    """Wrapper function for clearing the screen"""
     if OS_NAME == 'Windows':
         os.system('cls')
     else:  # 'Linux'
@@ -215,13 +220,14 @@ def clear_screen():
 
 
 def run_cmd(command: str) -> bytes:
-    '''Runs the given command. Returns the output'''
+    """Runs the given command. Returns the output"""
     command_process = sp.Popen(command.split(), stdout=sp.PIPE, stderr=sp.PIPE)
-    output, error = command_process.communicate()
+    output = command_process.communicate()[0]
     return output
 
 
 def print_menu():
+    """Prints all menu options"""
     output = 'Select an option:\n'
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
@@ -233,7 +239,7 @@ def print_menu():
     print(output)
 
 
-def get_user_input(message: str, default: str | None, use_type: type, help=None):
+def get_user_input(message: str, default: str | None, use_type: type, help_msg=None):
     '''Get and return user input. Automatically ensures no errors and supports default options
     default must be the same type as is passed in use_type
     if default is "use timestamp" it will return the current timestamp'''
@@ -251,9 +257,9 @@ def get_user_input(message: str, default: str | None, use_type: type, help=None)
             else:
                 print()
                 return default
-        elif user_input == 'help' and help is not None:
+        elif user_input == 'help' and help_msg is not None:
             clear_screen()
-            print(help)
+            print(help_msg)
             continue
         else:
             try:
@@ -267,11 +273,21 @@ def get_user_input(message: str, default: str | None, use_type: type, help=None)
     return user_input
 
 
-def get_new_file(message: str, default: str, location: str | None = None):
+def get_new_file(message: str, default: str, location: str | None = None) -> str:
+    """
+    Helper method for getting the name of a new file from the user
+
+    Args:
+        message (str): prompt to give to the user
+        default (str): default value if the user does not enter anything
+        location (str): Location where the file will be located
+    Returns:
+        str: The name of the file
+    """
     extension = '.' + default.split('.')[-1]
     while True:
         out_filename = get_user_input(message, default, str, None)
-        
+
         out_filename.rstrip(os.path.sep)
         if not out_filename.endswith(extension):
             out_filename = f'{out_filename}{extension}'
@@ -281,7 +297,7 @@ def get_new_file(message: str, default: str, location: str | None = None):
         try:
             if os.path.exists(out_filename):
                 raise FileExistsError()
-            open(out_filename, 'a').close()
+            open(out_filename, 'a', encoding='utf-8').close()
             break
         except FileNotFoundError:
             clear_screen()
@@ -292,20 +308,30 @@ def get_new_file(message: str, default: str, location: str | None = None):
         except FileExistsError:
             clear_screen()
             red_print('That output file already exists.\n')
-        except Exception as e:
+        except OSError as e:
             clear_screen()
             red_print(f'An error occurred with that file :( \n{e}\n')
-    
+
     clear_screen()
     return out_filename
 
 
-def get_existing_file(message: str, default: str | None, location: str):
+def get_existing_file(message: str, default: str | None, location: str) -> str:
+    """
+    Helper function for getting the name of an already existing file from the user
+
+    Args:
+        message (str): prompt to give to the user
+        default (str): default value if the user does not enter anything
+        location (str): the location where this file exists
+    Returns:
+        str: The target file path
+    """
     files = os.listdir(location)
     get_file_help = 'Choose one of the below files.\nYou can also enter the number corresponding to each file.\n'
     for i, file in enumerate(files):
         get_file_help += ('\t' + str(i) + ' - ' + file + '\n')
-    
+
     while True:
         user_selection = get_user_input(message, default, str, get_file_help)
 
@@ -319,7 +345,7 @@ def get_existing_file(message: str, default: str | None, location: str):
                 continue
             target_filename = files[user_num_selection]
             # found a valid file
-            break     
+            break
         except ValueError:  # not a number. User is entering a file name
             if not user_selection.endswith('.txt'):
                 user_selection = user_selection + '.txt'
@@ -330,13 +356,13 @@ def get_existing_file(message: str, default: str | None, location: str):
             # found a valid file
             target_filename = user_selection
             break
-    
+
     target_file_path = os.path.join(location, target_filename)
     return target_file_path
 
 
 def redact_data():
-    '''Gets user input for what data to redact from a user inputted cleaned capture'''
+    """Gets user input for what data to redact from a user inputted cleaned capture"""
     target_filename = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
     target_basename = os.path.basename(target_filename)
     output_filename = get_new_file('Enter the output file name', target_basename[:target_basename.index('.txt')] + '_redacted.txt', CLEANED_FILEPATH)
@@ -356,12 +382,11 @@ def redact_data():
         10 : ['ICMP Type', redact_icmp_type]
     }
     redact_func_list = []
-    help = 'Enter numbers separated by a comma to select the header fields to redact:\n'
+    help_msg = 'Enter numbers separated by a comma to select the header fields to redact:\n'
     for num, val in redact_func_dict.items():
-        field = val[0]
-        help += f'\t{num} - {field}\n'
-    
-    print(help)
+        help_msg += f'\t{num} - {val[0]}\n'
+
+    print(help_msg)
     user_input = get_user_input('Enter', None, str, help)
     if user_input == 'all':
         user_input = '1,2,3,4,5,6,7,8,9,10'
@@ -373,22 +398,19 @@ def redact_data():
             red_print('Non number entered...Quitting\n')
             return None
         func = redact_func_dict.get(num, None)
-        if func == None:
+        if func is None:
             continue
         redact_func_list.append(func[1])
 
-    with open(target_filename, 'r') as target_file, open(output_filename, 'w') as output_file:
+    with open(target_filename, 'r', encoding='utf-8') as target_file, open(output_filename, 'w', encoding='utf-8') as output_file:
         for line in target_file:
             line = line.split()
             timestamp = line[0]
             data = line[1]
 
-            # save the packet class before redacting and put it at the end of the line
-            packet_class = get_packet_class(data)
-
             for func in redact_func_list:
                 data = func(data)
-            output_file.write(f'{timestamp} {data} {packet_class}\n')
+            output_file.write(f'{timestamp} {data} {get_packet_class(data)}\n')
 
     # clear_screen()
     green_print(f'Redacted data has been outputted to {output_filename}\n')
@@ -397,14 +419,15 @@ def redact_data():
 
 
 def capture_traffic():
-    '''Runs tshark command to capture traffic. Stored in the CAPTURES_FILEPATH directory
-    Output file named with current timestamp and saved as k12 text file'''
-    adapter_names = '' 
+    """Runs tshark command to capture traffic. Stored in the CAPTURES_FILEPATH directory
+    Output file named with current timestamp and saved as k12 text file"""
+    adapter_names = ''
     for nice_name in [f'{name.ips[0].nice_name}' for name in ifaddr.get_adapters()]:
         adapter_names += (nice_name + '\n')
     capture_interface_help = f'Enter the name of a valid interface:\n{adapter_names}'
-    
-    while (capture_interface := get_user_input('Enter the capture interface. Use "help" for help', None, str, capture_interface_help)) not in adapter_names:
+
+    while (capture_interface := get_user_input('Enter the capture interface. Use "help" for help', None, str, capture_interface_help)) \
+        not in adapter_names:
         clear_screen()
         red_print('Not a valid adapter name\n')
 
@@ -413,7 +436,7 @@ def capture_traffic():
     output_filename = get_user_input('Enter an output filename', 'use timestamp', str)
     if '.' in output_filename:
         output_filename = output_filename[:output_filename.index('.')]
-    
+
     stop_method_help = 'Options:\n\tmanual - stops on user key press\n\tduration:NUM - stop after NUM seconds\n\
     \tpackets:NUM - stop after NUM packets\nExamples: manual, duration:30, packets:100\n'
     stop_method = get_user_input('Enter stop method. Use "help" for help', 'manual', str, stop_method_help)
@@ -444,7 +467,7 @@ def capture_traffic():
         red_print('tshark could not be found. Perhaps it needs to be installed or added to PATH?')
         red_print('Kicking you back to the main menu...\n')
         return
-    
+
     clear_screen()
     green_print('Started capture!')
     print(f'Using command: {" ".join(tshark_command_list)}', end='\n\n')
@@ -462,9 +485,9 @@ def capture_traffic():
         yellow_print('Stopping tshark process...')
         tshark_process.terminate()
     tshark_process.wait()
-    
+
     green_print('Capture successfully terminated.')
-    
+
     # convert the file to text
     run_cmd(f'tshark -r {full_path}.pcap -F k12text -w {full_path}.txt')
     os.remove(f'{full_path}.pcap')
@@ -476,6 +499,7 @@ def capture_traffic():
 
 
 def combine_cleaned_captures():
+    """Combines two cleaned captures into one file for easier analysis and feature extraction"""
     while True:
         first_file = get_existing_file('Enter the first file. Use "help" for help', None, CLEANED_FILEPATH)
         second_file = get_existing_file('Enter the second file. Use "help" for help', None, CLEANED_FILEPATH)
@@ -483,12 +507,14 @@ def combine_cleaned_captures():
             clear_screen()
             red_print('The two files cannot be the same!\n')
             continue
-        # Might want to put a check here to see if only one has been redacted 
+        # Might want to put a check here to see if only one has been redacted
         break
-    
+
     output_file = get_new_file('Enter an output file name', 'combined.txt', CLEANED_FILEPATH)
 
-    with open(first_file, 'r') as first, open(second_file, 'r') as second, open(output_file, 'w') as out:
+    with open(first_file, 'r', encoding='utf-8') as first, \
+        open(second_file, 'r', encoding='utf-8') as second, \
+        open(output_file, 'w', encoding='utf-8') as out:
         first_lines_count = 0
         second_lines_count = 0
         for line in first:
@@ -505,12 +531,12 @@ def combine_cleaned_captures():
 
 
 def clean_captures():
+    """Clean captures """
     target_captures_list = []
 
     get_target_capture_help = 'Enter a valid capture to clean. Enter "all" to clean all captures that have not been cleaned yet.\n'\
     'To clean multiple captures, enter their names separated by a comma.\n\nValid captures:\n'
     get_target_capture_help += ''.join(f'{capture_name}\n' for capture_name in os.listdir(CAPTURES_FILEPATH))
-    
 
     target_captures_input = get_user_input('Enter a capture to clean. Use "help" for help.', 'all', str, get_target_capture_help)
     if target_captures_input == 'all':
@@ -528,14 +554,14 @@ def clean_captures():
         yellow_print(f'Cleaning {capture}')
         capture_filepath = os.path.join(CAPTURES_FILEPATH, capture)
         output_filepath = os.path.join(CLEANED_FILEPATH, capture)
-        
+
         try:
-            capture_file = open(capture_filepath, 'r')
+            capture_file = open(capture_filepath, 'r', encoding='utf-8')
         except FileNotFoundError:
             print('\t', end='')
             red_print(f'The file {capture} could not be found. Skipping...')
             continue
-        output_file = open(output_filepath, 'w')
+        output_file = open(output_filepath, 'w', encoding='utf-8')
 
         # the following is for tshark capture files
         # TODO detect if the .txt file is tshark or tcpdump, and add support for cleaning tcpdump captures
@@ -549,7 +575,7 @@ def clean_captures():
                 prev_line = line
                 continue
             timestamp = prev_line.split()[0]
-            
+
             # if this is the first packet, save the start time for reference
             if byte_string is None:
                 start_times = re.split(r':|,', timestamp)
@@ -567,17 +593,18 @@ def clean_captures():
 
             # write to cleaned output file
             output_file.write(f'{microsec_diff_string} {byte_string}')
-        
+
         capture_file.close()
         output_file.close()
-        
+
     green_print('Cleaning finished!')
     print(f'Check {CLEANED_FILEPATH} for the cleaned file(s).')
     input('Press enter to return to the main menu...')
     clear_screen()
 
 
-def get_capture_data(filename: str):
+def get_capture_data(filename: str) -> CaptureData:
+    """Extract capture data from the specified cleaned file"""
     total_length = 0
     eth_num = 0
     ip_num = 0
@@ -597,7 +624,7 @@ def get_capture_data(filename: str):
 
     microsec_times = []
 
-    capture_file = open(filename, 'r')
+    capture_file = open(filename, 'r', encoding='utf-8')
 
     for line in capture_file:
         if not line:
@@ -612,20 +639,20 @@ def get_capture_data(filename: str):
         # grab appropriate data from the packet
         packet_length = len(packet_bytes)
         eth_type = get_eth_type(packet_bytes)
-        
+
         # check if eth type is below 0600
         # if so, this is an IEEE 802.3 frame
         if int(eth_type, 16) < 0x0600:
             other_type_counts['STP'] = other_type_counts.setdefault('STP', 0) + 1
             continue
-        
+
         eth_num += 1
         src_mac = get_src_mac(packet_bytes)
-        dst_mac = get_dst_mac(packet_bytes)
+        #dst_mac = get_dst_mac(packet_bytes)
 
         mac_string = get_printable_mac(src_mac)
         src_mac_counts[mac_string] = src_mac_counts.setdefault(mac_string, 0) + 1
-        
+
         eth_type_string = ETH_TYPES.get(eth_type, 'Other')
         # add one to the count for this eth_type, if it does not exist create it
         eth_type_counts[eth_type_string] = eth_type_counts.setdefault(eth_type_string, 0) + 1
@@ -634,19 +661,19 @@ def get_capture_data(filename: str):
             ip_num += 1
             ip_proto = get_ip_proto(packet_bytes)
             src_ip = get_src_ip(packet_bytes)
-            dst_ip = get_dst_ip(packet_bytes)
+            #dst_ip = get_dst_ip(packet_bytes)
 
             ip_string = get_printable_ip(src_ip)
             src_ip_counts[ip_string] = src_ip_counts.setdefault(ip_string, 0) + 1
 
             ip_proto_string = IP_PROTOS.get(ip_proto, 'Other')
             ip_proto_counts[ip_proto_string] = ip_proto_counts.setdefault(ip_proto_string, 0) + 1
-        
+
         # TCP packet
         if eth_type_string == 'IPv4' and (ip_proto_string == 'TCP' or ip_proto_string == 'UDP'):
             src_port = str(int(get_src_port(packet_bytes), 16))
             dst_port = str(int(get_dst_port(packet_bytes), 16))
-            
+
             if ip_proto_string == 'TCP':
                 tcp_num += 1
                 tcp_src_port_counts[src_port] = tcp_src_port_counts.setdefault(src_port, 0) + 1
@@ -666,7 +693,7 @@ def get_capture_data(filename: str):
                 for port, protocol in UDP_SERVICE_PORTS.items():
                     if src_port == port or dst_port == port:
                         other_type_counts[protocol] = other_type_counts.setdefault(protocol, 0) + 1
-                       
+
 
         total_length += packet_length
         num_packets += 1
@@ -676,7 +703,7 @@ def get_capture_data(filename: str):
     if not num_packets:  # zero packets in this capture
         red_print('No packets present')
         return None
-    
+
     average_length = total_length / num_packets
 
     # place all data into the class structure
@@ -706,6 +733,7 @@ def get_capture_data(filename: str):
 
 
 def analyze_data():
+    """Calculates statistics and creates plots to visualize capture data"""
     target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
     target_file = os.path.basename(target_file_path)
     capture_data = get_capture_data(target_file_path)
@@ -804,7 +832,7 @@ def analyze_data():
     # 1,2 (packet times histogram)
     this_ax = ax[1,2]
     data = [int(val)/1000000 for val in capture_data.microsec_times]
-    counts, bins, patches = this_ax.hist(data, bins=10)
+    counts, bins = this_ax.hist(data, bins=10)[:2]
     this_ax.set_title('Packet Time Histogram')
     this_ax.set_xlabel('Packet Time (s)')
     this_ax.set_ylabel('Frequency')
@@ -820,28 +848,29 @@ def analyze_data():
     large_histogram_fig.set_figwidth(12)
     this_ax = large_histogram_fig.add_subplot(1, 1, 1)
     data = [int(val)/1000000 for val in capture_data.microsec_times]
-    counts, bins, patches = this_ax.hist(data, bins=50)
+    counts, bins = this_ax.hist(data, bins=50)[:2]
     this_ax.set_title('Packet Time Histogram')
     this_ax.set_xlabel('Packet Time (s)')
     this_ax.set_ylabel('Frequency')
     this_ax.set_xticks(bins, bins, rotation=45, ha='right', rotation_mode='anchor', size=8)
     this_ax.xaxis.set_major_formatter(FormatStrFormatter('%0.2f'))
-    
+
     fig.show()
     large_histogram_fig.show()
 
     green_print('Charts are being displayed...')
     input('Press enter to clear charts and return to the main menu...')
-    
+
     # close figures
     plt.close(fig)
     plt.close(large_histogram_fig)
-    
+
     clear_screen()
     print()
 
 
 def print_counts_dict(counts_dict: dict | None):
+    """Convenience function for printing out a dictionary containing packet counts"""
     if counts_dict is None or len(counts_dict) == 0:
         print('No data collected for this statistic')
         return
@@ -856,6 +885,7 @@ def print_counts_dict(counts_dict: dict | None):
 
 
 def print_text_analysis(capture_data: CaptureData) -> None:
+    """Display text-formatted information based on the capture data"""
     print('Overall Counts:')
     print(f'{"Average Length:":.<40}{capture_data.average_length:.2f}')
     print(f'{"Total number of packets:":.<40}{capture_data.num_packets}')
@@ -900,22 +930,23 @@ def print_text_analysis(capture_data: CaptureData) -> None:
 # returns a list of packet layers corresponding to PACKET_LAYERS enum
 # used for checking whether data at specific locations should be redacted
 def get_packet_layers(packet_bytes: str) -> list[int]:
+    """Find all the encapsulated layers in this packet"""
     layers = []
     # for right now, just assume everything is ethernet
-    layers.append(PACKET_LAYERS.ETHERNET)
+    layers.append(PacketLayers.ETHERNET)
 
     if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':
-        layers.append(PACKET_LAYERS.ARP)
+        layers.append(PacketLayers.ARP)
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':
-        layers.append(PACKET_LAYERS.IPV4)
+        layers.append(PacketLayers.IPV4)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':
-            layers.append(PACKET_LAYERS.ICMP)
+            layers.append(PacketLayers.ICMP)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
-            layers.append(PACKET_LAYERS.TCP)
+            layers.append(PacketLayers.TCP)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
-            layers.append(PACKET_LAYERS.UDP)
+            layers.append(PacketLayers.UDP)
     else:
-        layers.append(PACKET_LAYERS.IPV6)
+        layers.append(PacketLayers.IPV6)
 
     return layers
 
@@ -923,6 +954,7 @@ def get_packet_layers(packet_bytes: str) -> list[int]:
 # returns packet class - our class are [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
 # this function returns [0, 1, 2, 3, 4, 5, 6, 7, 8] corresponding to each class
 def get_packet_class(packet_bytes: str) -> int:
+    """Get the class of this packet of the ones we are interested in"""
     other = CLASSES.get('Other')
     if not other:
         red_print('No "Other" value present in classes!\n')
@@ -945,6 +977,7 @@ def get_packet_class(packet_bytes: str) -> int:
 
 
 def extract_features(X_2D = False):
+    """Extract the features we want from the data in 1D or 2D format"""
     if not X_2D:
         num_features = NUM_FEATURES
     else:
@@ -965,7 +998,7 @@ def extract_features(X_2D = False):
     packets_analyzed = 0
     samples_per_class = {packet_class: 0 for packet_class in CLASSES.values()}
     features_extracted = 0
-    with open(target_file_path, 'r') as target_file:
+    with open(target_file_path, 'r', encoding='utf-8') as target_file:
         # Create a list of nibbles for each packet in target_file
         for line in target_file:
             line_list = line.split()
@@ -981,7 +1014,7 @@ def extract_features(X_2D = False):
                 return
             if not samples_per_class[packet_class] < SAMPLES_PER_CLASS:
                 continue
-            
+
             # Increment count and add to y
             samples_per_class[packet_class] += 1
             y.append(packet_class)
@@ -991,7 +1024,7 @@ def extract_features(X_2D = False):
             # pad to NUM_FEATURES length
             if len(nibbles) < num_features:
                 nibbles.extend([0] * (num_features-len(nibbles)))
-            
+
             # increment counts
             features_extracted += len(nibbles)
             packets_analyzed += 1
@@ -1032,22 +1065,21 @@ def extract_features(X_2D = False):
 
 
 def main():
+    """Main function"""
     # get the operating system
-    global OS_NAME
-    OS_NAME = platform.system()
-    if OS_NAME == 'Windows' or OS_NAME == 'Linux':
+    if OS_NAME in {'Windows', 'Linux'}:
         green_print(f'Detected running on {OS_NAME} system!')
     else:
         red_print(f'Detected running on {OS_NAME} system which is not supported.')
-        exit()
-    
+        sys.exit()
+
     # check that captures and cleaned file paths exist
     if not os.path.exists(CAPTURES_FILEPATH):
         red_print(f'The path for capture files "{CAPTURES_FILEPATH}" does not exist. Qutting...')
-        exit()
+        sys.exit()
     if not os.path.exists(CLEANED_FILEPATH):
         red_print(f'The path for cleaned files "{CLEANED_FILEPATH}" does not exist. Quitting...')
-        exit()
+        sys.exit()
 
     while True:
         print_menu()
@@ -1059,7 +1091,7 @@ def main():
             continue
         except KeyboardInterrupt:
             print('Goodbye!\n')
-            exit()
+            sys.exit()
 
         if user_input == 1:
             capture_traffic()
@@ -1081,5 +1113,4 @@ def main():
 
 
 if __name__ == '__main__':
-   main()
-    
+    main()
