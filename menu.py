@@ -61,7 +61,7 @@ CLEANED_FILEPATH = 'cleaned'
 NUM_FEATURES = 128
 CNN_FEATURES_DIMENSION = 14
 
-SAMPLES_PER_CLASS = 10000
+SAMPLES_PER_CLASS = 1000
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -83,6 +83,11 @@ SRC_PORT_LOC = 34
 DST_PORT_LOC = 36
 ARP_OPCODE_LOC = 20
 ICMP_TYPE_LOC = 34
+LLC_DSAP_LOC = 14
+LLC_SSAP_LOC = 15
+LLC_CONTROL_FIELD_LOC = 16
+
+ETH_802_3_THRESHOLD = 1500
 
 ETH_TYPES = {
     '0800' : 'IPv4',
@@ -98,11 +103,19 @@ IP_PROTOS = {
     '3a' : 'ICMPv6'
 }
 
+IPV6_NEXT_HEADERS = {
+    '11' : 'UDP',
+    '00' : 'hop-by-hop'
+}
+
+LLC_DSAP = {
+    '42' : 'STP'
+}
+
 TCP_SERVICE_PORTS = {
     '0050' : 'HTTP',
     '1f90' : 'HTTP-8080',
-    '01bb' : 'TLS',
-    '0089' : 'NBNS'
+    '01bb' : 'TLS'
 }
 
 UDP_SERVICE_PORTS = {
@@ -111,7 +124,9 @@ UDP_SERVICE_PORTS = {
     '0044' : 'DHCP',
     '0089' : 'NBNS',
     '076c' : 'SSDP',
-    '01bb' : 'QUIC'
+    '07c6' : 'SSDP',
+    '01bb' : 'QUIC',
+    '14e9' : 'MDNS'
 }
 
 ARP_OPCODES = {
@@ -136,16 +151,24 @@ class PacketLayers(Enum):
     TCP = 6
     UDP = 7
 
+# Defines the classes that we care about
+# There must be an "other" class, but if it is defined as -1, it means we do not care about it
+# TODO: add icmpv6, which will require some more work with ipv6 and hop-by-hop header
 CLASSES = {
-    # 'ARP Request': 0,
-    # 'ARP Reply' : 1,
-    'ICMP Echo Request' : 0,
-    'ICMP Echo Reply' : 1,
-    'TLS' : 2,
-    'HTTP' : 3,
-    'DNS' : 4,
-    'QUIC' : 5,
-    'Other' : 6
+    'ARP Request': 0,
+    'ARP Reply' : 1,
+    'ICMP Echo Request' : 2,
+    'ICMP Echo Reply' : 3,
+    'TLS' : 4,
+    'HTTP' : 5,
+    'DNS-query' : 6,
+    'DNS-response': 7,
+    'QUIC' : 8,
+    'MDNS' : 9,
+    'NBNS' : 10,
+    'SSDP' : 11,
+    'STP' : 12,
+    'Other' : -1
 }
 
 def green_print(msg: str) -> None:
@@ -173,8 +196,9 @@ def get_printable_mac(mac: str) -> str | None:
         return None
     return ':'.join(''.join(pair) for pair in zip(*[iter(mac)]*2))
 
-def get_header_field(data: str, loc: int, length: int) -> str:
+def get_header_field(data: str, loc: int, length: int, offset: int = 0) -> str:
     """Gets bytes of specified length from specified location from the data"""
+    loc += offset
     return data[loc*2:(loc+length)*2]
 
 # Partial functions for getting each header field
@@ -189,6 +213,9 @@ get_src_port = partial(get_header_field, loc=SRC_PORT_LOC, length=2)
 get_dst_port = partial(get_header_field, loc=DST_PORT_LOC, length=2)
 get_arp_opcode = partial(get_header_field, loc=ARP_OPCODE_LOC, length=2)
 get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
+get_llc_dsap = partial(get_header_field, loc=LLC_DSAP_LOC, length=1)
+get_llc_ssap = partial(get_header_field, loc=LLC_SSAP_LOC, length=1)
+get_llc_control_field = partial(get_header_field, loc=LLC_CONTROL_FIELD_LOC, length=1)
 
 def redact_packet_data(data: str, loc: int, length: int, required_layers: list[PacketLayers]):
     """Convenient function for replacing specified bytes with"""
@@ -603,7 +630,7 @@ def clean_captures():
     clear_screen()
 
 
-def get_capture_data(filename: str) -> CaptureData:
+def get_capture_data(filename: str) -> CaptureData | None:
     """Extract capture data from the specified cleaned file"""
     total_length = 0
     eth_num = 0
@@ -887,11 +914,11 @@ def print_counts_dict(counts_dict: dict | None):
 def print_text_analysis(capture_data: CaptureData) -> None:
     """Display text-formatted information based on the capture data"""
     print('Overall Counts:')
-    print(f'{"Average Length:":.<40}{capture_data.average_length:.2f}')
-    print(f'{"Total number of packets:":.<40}{capture_data.num_packets}')
-    print(f'{"Total Ethernet II packets:":.<40}{capture_data.eth_num}')
-    print(f'{"Total IP packets:":.<40}{capture_data.ip_num}')
-    print(f'{"Total TCP packets:":.<40}{capture_data.tcp_num}')
+    print(f'{"Average Length":.<40}{capture_data.average_length:.2f}')
+    print(f'{"Total number of packets":.<40}{capture_data.num_packets}')
+    print(f'{"Total Ethernet II packets":.<40}{capture_data.eth_num}')
+    print(f'{"Total IP packets":.<40}{capture_data.ip_num}')
+    print(f'{"Total TCP packets":.<40}{capture_data.tcp_num}')
     print()
 
     print('Ethernet Type Counts:')
@@ -951,28 +978,53 @@ def get_packet_layers(packet_bytes: str) -> list[int]:
     return layers
 
 
-# returns packet class - our class are [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
-# this function returns [0, 1, 2, 3, 4, 5, 6, 7, 8] corresponding to each class
+# returns packet class - See CLASSES definition at the top of the file
 def get_packet_class(packet_bytes: str) -> int:
-    """Get the class of this packet of the ones we are interested in"""
+    """Get the class of this packet of the ones we are interested in
+    
+    Args:
+        packet_bytes (str): raw packet bytes to analyze
+    Returns:
+        int: integer representing the packet class. -1 if it is not a class we care about
+    """
     other = CLASSES.get('Other')
     if not other:
-        red_print('No "Other" value present in classes!\n')
-        return -1
+        raise ValueError('No "other" value in classes!')
+
     if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it reply or request
         return CLASSES.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
+
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP - echo reply or request
             return CLASSES.get(ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other'), other)
+
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
             src_port_class = CLASSES.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
             return src_port_class if src_port_class != other else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
+
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
-            src_port_class = CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != other else CLASSES.get(UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
+            # need extra logic for DNS or DNS-query and DNS-response
+            src_port_service = UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
+            dst_port_service = UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
+            if src_port_service == 'DNS' or dst_port_service == 'DNS':  # this will have to do with DNS
+                if 'DNS' in CLASSES.keys():
+                    return CLASSES.get('DNS', other)
+                elif 'DNS-query' in CLASSES.keys() and 'DNS-response' in CLASSES.keys():
+                    return CLASSES.get('DNS-query', other) if dst_port_service == 'DNS' else CLASSES.get('DNS-response', other)
+            src_port_class = CLASSES.get(src_port_service, other)
+            return src_port_class if src_port_class != other else CLASSES.get(dst_port_service, other)
         else:  # neither TCP nor UDP
             return other
-    else:  # IPv6 or something else
+
+    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv6':
+        if IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'UDP':
+            # offset=20 because the ipv6 header is 20 bytes larger than the ipv4 header
+            return CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes, offset=20), 'Other'), other)
+        else:  # not udp
+            return other
+    elif int(get_eth_type(packet_bytes), 16) < ETH_802_3_THRESHOLD:  # not an Ethernet II frame
+        return CLASSES.get(LLC_DSAP.get(get_llc_dsap(packet_bytes), 'Other'), other)
+    else:
         return other
 
 
@@ -989,14 +1041,13 @@ def extract_features(X_2D = False):
     y_out_filename = out_filename.split('.')[0] + '_y.npy'
 
     # Initialize X, y
-    # y holds our classes [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
-    # they map to [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    # y holds our classes e.g. [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
     y = []
     X = []
 
     # Initialize counters
     packets_analyzed = 0
-    samples_per_class = {packet_class: 0 for packet_class in CLASSES.values()}
+    samples_per_class = {packet_class: 0 for packet_class in CLASSES.values() if packet_class != -1}
     features_extracted = 0
     with open(target_file_path, 'r', encoding='utf-8') as target_file:
         # Create a list of nibbles for each packet in target_file
@@ -1010,8 +1061,9 @@ def extract_features(X_2D = False):
             else:
                 packet_class = -1
 
+            # We don't care about this packet
             if packet_class == -1:
-                return
+                continue
             if not samples_per_class[packet_class] < SAMPLES_PER_CLASS:
                 continue
 
