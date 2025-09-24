@@ -86,6 +86,7 @@ ICMP_TYPE_LOC = 34
 LLC_DSAP_LOC = 14
 LLC_SSAP_LOC = 15
 LLC_CONTROL_FIELD_LOC = 16
+IPV6_HOP_BY_HOP_NEXT_HEADER_LOC = 54
 
 ETH_802_3_THRESHOLD = 1500
 
@@ -105,11 +106,16 @@ IP_PROTOS = {
 
 IPV6_NEXT_HEADERS = {
     '11' : 'UDP',
-    '00' : 'hop-by-hop'
+    '00' : 'hop-by-hop',
+    '3a' : 'ICMPv6'
 }
 
 LLC_DSAP = {
     '42' : 'STP'
+}
+
+IPV6_HOP_BY_HOP_NEXT_HEADERS = {
+    '3a' : 'ICMPv6'
 }
 
 TCP_SERVICE_PORTS = {
@@ -159,15 +165,16 @@ CLASSES = {
     'ARP Reply' : 1,
     'ICMP Echo Request' : 2,
     'ICMP Echo Reply' : 3,
-    'TLS' : 4,
-    'HTTP' : 5,
-    'DNS-query' : 6,
-    'DNS-response': 7,
-    'QUIC' : 8,
-    'MDNS' : 9,
-    'NBNS' : 10,
-    'SSDP' : 11,
-    'STP' : 12,
+    'ICMPv6' : 4,
+    'TLS' : 5,
+    'HTTP' : 6,
+    'DNS-query' : 7,
+    'DNS-response': 8,
+    'QUIC' : 9,
+    'MDNS' : 10,
+    'NBNS' : 11,
+    'SSDP' : 12,
+    'STP' : 13,
     'Other' : -1
 }
 
@@ -216,9 +223,11 @@ get_icmp_type = partial(get_header_field, loc=ICMP_TYPE_LOC, length=1)
 get_llc_dsap = partial(get_header_field, loc=LLC_DSAP_LOC, length=1)
 get_llc_ssap = partial(get_header_field, loc=LLC_SSAP_LOC, length=1)
 get_llc_control_field = partial(get_header_field, loc=LLC_CONTROL_FIELD_LOC, length=1)
+get_ipv6_hop_by_hop_next_header = partial(get_header_field, loc=IPV6_HOP_BY_HOP_NEXT_HEADER_LOC, length=1)
+
 
 def redact_packet_data(data: str, loc: int, length: int, required_layers: list[PacketLayers]):
-    """Convenient function for replacing specified bytes with"""
+    """Convenient function for replacing specified bytes with zeros"""
     if any(layer in get_packet_layers(data) for layer in required_layers) and (loc+length)*2 <= len(data):
         return data[:loc*2] + '0'*length*2 + data[(loc+length)*2:]
     else:
@@ -576,11 +585,23 @@ def clean_captures():
 
     for capture in target_captures_list:
         if not capture.endswith('.txt'):
-            capture = capture + '.txt'
+            # this is a pcap file that we should make into a k12 text first (if the k12 does not already exist)
+            if (capture.endswith('.pcapng') or capture.endswith('.pcap')):
+                old_capture_name = capture
+                capture = f'{os.path.splitext(capture)[0]}.txt'  # it either already exists or we are going to create it
+                if not os.path.exists(os.path.join(CAPTURES_FILEPATH, capture)):
+                    yellow_print('\tDetected pcap/pcapng file. Converting to k12text...')
+                    run_cmd(f'tshark -r {os.path.join(CAPTURES_FILEPATH, old_capture_name)} -F k12text -w {os.path.join(CAPTURES_FILEPATH, capture)}')
+            else:
+                capture = capture + '.txt'
         print('\t', end='')
         yellow_print(f'Cleaning {capture}')
         capture_filepath = os.path.join(CAPTURES_FILEPATH, capture)
         output_filepath = os.path.join(CLEANED_FILEPATH, capture)
+
+        if os.path.exists(output_filepath):
+            yellow_print('\tFile has already been cleaned. Skipping...')
+            continue
 
         try:
             capture_file = open(capture_filepath, 'r', encoding='utf-8')
@@ -1020,6 +1041,10 @@ def get_packet_class(packet_bytes: str) -> int:
         if IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'UDP':
             # offset=20 because the ipv6 header is 20 bytes larger than the ipv4 header
             return CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes, offset=20), 'Other'), other)
+        elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'ICMPv6':
+            return CLASSES.get('ICMPv6', other)
+        elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'hop-by-hop':
+            return CLASSES.get(IPV6_HOP_BY_HOP_NEXT_HEADERS.get(get_ipv6_hop_by_hop_next_header(packet_bytes), 'Other'), other)
         else:  # not udp
             return other
     elif int(get_eth_type(packet_bytes), 16) < ETH_802_3_THRESHOLD:  # not an Ethernet II frame
