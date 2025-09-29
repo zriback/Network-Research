@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 import ifaddr
+from typing import Callable, Any
 
 # "Linux" or "Windows"
 OS_NAME = platform.system()
@@ -61,7 +62,7 @@ CLEANED_FILEPATH = 'cleaned'
 NUM_FEATURES = 128
 CNN_FEATURES_DIMENSION = 14
 
-SAMPLES_PER_CLASS = 1000
+SAMPLES_PER_CLASS = 500
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -159,7 +160,6 @@ class PacketLayers(Enum):
 
 # Defines the classes that we care about
 # There must be an "other" class, but if it is defined as -1, it means we do not care about it
-# TODO: add icmpv6, which will require some more work with ipv6 and hop-by-hop header
 CLASSES = {
     'ARP Request': 0,
     'ARP Reply' : 1,
@@ -275,10 +275,19 @@ def print_menu():
     print(output)
 
 
-def get_user_input(message: str, default: str | None, use_type: type, help_msg=None):
-    '''Get and return user input. Automatically ensures no errors and supports default options
-    default must be the same type as is passed in use_type
-    if default is "use timestamp" it will return the current timestamp'''
+def get_user_input(message: str, default: str | None, use_type: type, help_msg=None, test_func: None | Callable[[Any], bool] = None):
+    """
+    Get and returns user input
+
+    Args:
+        message (str): Prompt to give to the user
+        default (str): Default value to use if the user does not enter anything
+        use_type (type): Type to verify the user enters
+        help_message (str): Help message to give the user if they type 'help'
+        test_func (Callable): Test function that returns true/false that the value is valid. Used for adding more checks to ensure valid values
+    Returns:
+        The valid user input
+    """
     while True:
         print(f'{message} (default is {default if default != "" else "empty"}): ', end='')
         user_input = input()
@@ -300,6 +309,9 @@ def get_user_input(message: str, default: str | None, use_type: type, help_msg=N
         else:
             try:
                 user_input = use_type(user_input)
+                # run test function
+                if test_func is not None and not test_func(user_input):
+                    raise ValueError()
             except ValueError:
                 clear_screen()
                 red_print('Enter a valid value\n')
@@ -999,8 +1011,34 @@ def get_packet_layers(packet_bytes: str) -> list[int]:
     return layers
 
 
+def get_ip_class(class_name: str, classes: dict[str, int], packet_bytes: str) -> int:
+    """
+    Tests to see if this class is present in classes with src/dst ip qualifiers
+
+    Args:
+        class_name (str): the class name we are testing
+        classes (dict): classes dictionary
+        packet_bytes (str): bytes of this packet
+    Return:
+        (int): the int class of this packet, -1 if this class is not present at all
+    """
+    src_ip = get_printable_ip(get_src_ip(packet_bytes))
+    dst_ip = get_printable_ip(get_dst_ip(packet_bytes))
+
+    possible_class_name = f'{class_name}-src-{src_ip}'
+    if possible_class_name in classes.keys():
+        return classes[possible_class_name]
+    possible_class_name = f'{class_name}-dst-{dst_ip}'
+    if possible_class_name in classes.keys():
+        return classes[possible_class_name]
+    if class_name in classes.keys():
+        return classes[class_name]
+    else:
+        return -1
+
+
 # returns packet class - See CLASSES definition at the top of the file
-def get_packet_class(packet_bytes: str) -> int:
+def get_packet_class(packet_bytes: str, classes: dict[str, int] = CLASSES) -> int:
     """Get the class of this packet of the ones we are interested in
     
     Args:
@@ -1008,47 +1046,54 @@ def get_packet_class(packet_bytes: str) -> int:
     Returns:
         int: integer representing the packet class. -1 if it is not a class we care about
     """
-    other = CLASSES.get('Other')
+    other = classes.get('Other')
     if not other:
         raise ValueError('No "other" value in classes!')
 
     if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it reply or request
-        return CLASSES.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
+        return classes.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
 
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP - echo reply or request
-            return CLASSES.get(ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other'), other)
-
+            if ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Request':
+                if get_ip_class('ICMP Echo Request', classes, packet_bytes) != -1:
+                    return get_ip_class('ICMP Echo Request', classes, packet_bytes)
+            elif ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Reply':
+                if get_ip_class('ICMP Echo Reply', classes, packet_bytes) != -1:
+                    return get_ip_class('ICMP Echo Reply', classes, packet_bytes)
+            elif get_ip_class('ICMP', classes, packet_bytes) != -1:
+                return get_ip_class('ICMP', classes, packet_bytes)
+            return other
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
-            src_port_class = CLASSES.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != other else CLASSES.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
+            src_port_class = classes.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
+            return src_port_class if src_port_class != other else classes.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
 
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
             # need extra logic for DNS or DNS-query and DNS-response
             src_port_service = UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
             dst_port_service = UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
             if src_port_service == 'DNS' or dst_port_service == 'DNS':  # this will have to do with DNS
-                if 'DNS' in CLASSES.keys():
-                    return CLASSES.get('DNS', other)
-                elif 'DNS-query' in CLASSES.keys() and 'DNS-response' in CLASSES.keys():
-                    return CLASSES.get('DNS-query', other) if dst_port_service == 'DNS' else CLASSES.get('DNS-response', other)
-            src_port_class = CLASSES.get(src_port_service, other)
-            return src_port_class if src_port_class != other else CLASSES.get(dst_port_service, other)
+                if 'DNS' in classes.keys():
+                    return classes.get('DNS', other)
+                elif 'DNS-query' in classes.keys() and 'DNS-response' in classes.keys():
+                    return classes.get('DNS-query', other) if dst_port_service == 'DNS' else classes.get('DNS-response', other)
+            src_port_class = classes.get(src_port_service, other)
+            return src_port_class if src_port_class != other else classes.get(dst_port_service, other)
         else:  # neither TCP nor UDP
             return other
 
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv6':
         if IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'UDP':
             # offset=20 because the ipv6 header is 20 bytes larger than the ipv4 header
-            return CLASSES.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes, offset=20), 'Other'), other)
+            return classes.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes, offset=20), 'Other'), other)
         elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'ICMPv6':
-            return CLASSES.get('ICMPv6', other)
+            return classes.get('ICMPv6', other)
         elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'hop-by-hop':
-            return CLASSES.get(IPV6_HOP_BY_HOP_NEXT_HEADERS.get(get_ipv6_hop_by_hop_next_header(packet_bytes), 'Other'), other)
+            return classes.get(IPV6_HOP_BY_HOP_NEXT_HEADERS.get(get_ipv6_hop_by_hop_next_header(packet_bytes), 'Other'), other)
         else:  # not udp
             return other
     elif int(get_eth_type(packet_bytes), 16) < ETH_802_3_THRESHOLD:  # not an Ethernet II frame
-        return CLASSES.get(LLC_DSAP.get(get_llc_dsap(packet_bytes), 'Other'), other)
+        return classes.get(LLC_DSAP.get(get_llc_dsap(packet_bytes), 'Other'), other)
     else:
         return other
 
@@ -1062,6 +1107,14 @@ def extract_features(X_2D = False):
 
     target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
 
+    help_msg = 'Enter a valid class from the list below:\n'
+    help_msg += '\n'.join(class_name for class_name in CLASSES.keys()) + '\n'
+    class_split_selection = get_user_input('Enter a class to split, if desired. (Use "help" for help)', '', str, help_msg, lambda x: x in CLASSES.keys())
+    if class_split_selection:
+        classes = split_class(class_split_selection, target_file_path)
+    else:
+        classes = CLASSES
+
     out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy')
     y_out_filename = out_filename.split('.')[0] + '_y.npy'
 
@@ -1072,7 +1125,7 @@ def extract_features(X_2D = False):
 
     # Initialize counters
     packets_analyzed = 0
-    samples_per_class = {packet_class: 0 for packet_class in CLASSES.values() if packet_class != -1}
+    samples_per_class = {packet_class: 0 for packet_class in classes.values() if packet_class != -1}
     features_extracted = 0
     with open(target_file_path, 'r', encoding='utf-8') as target_file:
         # Create a list of nibbles for each packet in target_file
@@ -1080,7 +1133,7 @@ def extract_features(X_2D = False):
             line_list = line.split()
             packet_bytes = line_list[1]
             if len(line_list) == 2:  # not redacted data, no class identifier added
-                packet_class = get_packet_class(packet_bytes)
+                packet_class = get_packet_class(packet_bytes, classes=classes)
             elif len(line_list) == 3:  # is redacted data and identifier was added
                 packet_class = int(line_list[2])
             else:
@@ -1127,7 +1180,7 @@ def extract_features(X_2D = False):
     for packet_class, count in samples_per_class.items():
         if count == 0:
             continue
-        print(f'{dict(zip(CLASSES.values(), CLASSES.keys())).get(packet_class):.<40}{count}')
+        print(f'{dict(zip(classes.values(), classes.keys())).get(packet_class):.<40}{count}')
         if count < SAMPLES_PER_CLASS:
             not_enough_packets_warning = True
     print()
@@ -1141,6 +1194,77 @@ def extract_features(X_2D = False):
     clear_screen()
 
 
+def split_class(class_selection: str, target_file_path: str):
+    """
+    Helps the user split the provided class based on the data from this file
+
+    Args:
+        class_selection (str): the class we are trying to split
+        target_file_path (str): file we are currently working with
+    Returns:
+        (dict): a copy of the global CLASSES dictionary but with the given class split by IP
+    """
+    # TODO: Modify to work with more than IP address 
+    # examine all those packets
+    class_selection_code = CLASSES.get(class_selection)
+    src_ip_counts = {}
+    dst_ip_counts = {}
+    with open(target_file_path, 'r') as f:
+        for line in f:
+            packet_bytes = line.split()[1]
+            packet_class = get_packet_class(packet_bytes)
+            if packet_class == class_selection_code and PacketLayers.IPV4 in get_packet_layers(packet_bytes):
+                src_ip = get_printable_ip(get_src_ip(packet_bytes))
+                dst_ip = get_printable_ip(get_dst_ip(packet_bytes))
+                src_ip_counts[src_ip] = src_ip_counts.get(src_ip, 0) + 1
+                dst_ip_counts[dst_ip] = dst_ip_counts.get(dst_ip, 0) + 1
+    
+    # Reduce dictionaries down to only IPs that have enough samples
+    src_ip_counts = {ip: count for ip, count in src_ip_counts.items() if count >= SAMPLES_PER_CLASS}
+    dst_ip_counts = {ip: count for ip, count in dst_ip_counts.items() if count >= SAMPLES_PER_CLASS}
+
+    help = 'Source IP Counts:\n'
+    counter = 0
+    for ip, count in src_ip_counts.items():
+        help += f'{counter}: {ip:.<40}{count}\n'
+        counter += 1
+    help += '\nDestination IP Counts:\n'
+    for ip, count in dst_ip_counts.items():
+        help += f'{counter}: {ip:.<40}{count}\n'
+        counter += 1
+    help += '\n'
+    print(help)
+
+    while True:
+        ip_selections = get_user_input('Enter the numbers seperated by commas for the IP addresses to split this class on.', None, str, help, lambda x: len(x.split(',')) > 1 and all(int(i) < counter for i in x.split(','))).split(',')
+        # Make sure all of them are from either src or dst ips
+        ip_selections = [int(i) for i in ip_selections]
+        if not (all(int(num) < len(src_ip_counts) for num in ip_selections) or all(int(num) >= len(src_ip_counts) for num in ip_selections)):
+            clear_screen()
+            red_print('All selections must be either source or destination IP addresses\n')
+        else:
+            break
+
+    classes = CLASSES.copy()
+    del classes[class_selection]
+
+    if ip_selections[0] < len(src_ip_counts):
+        for selection in ip_selections:
+            classes[f'{class_selection}-src-{list(src_ip_counts.keys())[selection]}'] = -1  # placeholder value
+    else:
+        ip_selections = [i-len(src_ip_counts) for i in ip_selections]
+        for selection in ip_selections:
+            classes[f'{class_selection}-dst-{list(dst_ip_counts.keys())[selection]}'] = -1  # placeholder value
+    
+    # go through and fix all the class number values now (not really necessary but I want to)
+    for i, key in enumerate(classes):
+        classes[key] = i
+    if CLASSES.get('Other', -1) == -1:
+        classes['Other'] = -1
+    
+    return classes
+
+  
 def main():
     """Main function"""
     # get the operating system
