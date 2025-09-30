@@ -53,9 +53,10 @@ class CaptureData:
     other_type_counts: Optional[dict] = None
     microsec_times: list = field(default_factory=list)
 
-# File paths for directories containing raw captures and cleaned files
+# File paths for directories containing raw captures, cleaned files, and for output files
 CAPTURES_FILEPATH = 'captures'
 CLEANED_FILEPATH = 'cleaned'
+OUTPUT_FILEPATH = 'output'
 
 # Number of nibbles to extract from each packet as a feature from each packet
 # The first NUM_FEATURES/2 bytes are extracted from each packet
@@ -328,7 +329,7 @@ def get_new_file(message: str, default: str, location: str | None = None) -> str
     Args:
         message (str): prompt to give to the user
         default (str): default value if the user does not enter anything
-        location (str): Location where the file will be located
+        location (str): Location where the file will be located. None means the current working directory
     Returns:
         str: The name of the file
     """
@@ -929,14 +930,20 @@ def analyze_data():
     print()
 
 
-def print_counts_dict(counts_dict: dict | None):
-    """Convenience function for printing out a dictionary containing packet counts"""
+def print_counts_dict(counts_dict: dict | None, max_lines: int = MAX_BAR_CHART_BARS) -> None:
+    """
+    Convenience function for printing out a dictionary containing packet counts
+    
+    Args:
+        counts_dict (dict): dictionary containing the labels and counts
+        max_lines (int): the maximum number of lines to print
+    """
     if counts_dict is None or len(counts_dict) == 0:
         print('No data collected for this statistic')
         return
     extra_values = 0
     for i, (mac, count) in enumerate(counts_dict.items()):
-        if i < MAX_BAR_CHART_BARS:
+        if i < max_lines:
             print(f'{mac:.<40}{count}')
         else:
             extra_values += 1
@@ -1014,6 +1021,8 @@ def get_packet_layers(packet_bytes: str) -> list[int]:
 def get_ip_class(class_name: str, classes: dict[str, int], packet_bytes: str) -> int:
     """
     Tests to see if this class is present in classes with src/dst ip qualifiers
+    If it is return it as that class. If it is not but the class exists in classes without a src/dst qualifier, then return that class
+    If the class is not present at all in classes, then return -1
 
     Args:
         class_name (str): the class name we are testing
@@ -1056,29 +1065,43 @@ def get_packet_class(packet_bytes: str, classes: dict[str, int] = CLASSES) -> in
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP - echo reply or request
             if ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Request':
-                if get_ip_class('ICMP Echo Request', classes, packet_bytes) != -1:
-                    return get_ip_class('ICMP Echo Request', classes, packet_bytes)
+                if (ip_class := get_ip_class('ICMP Echo Request', classes, packet_bytes)) != -1:
+                    return ip_class
             elif ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Reply':
-                if get_ip_class('ICMP Echo Reply', classes, packet_bytes) != -1:
-                    return get_ip_class('ICMP Echo Reply', classes, packet_bytes)
-            elif get_ip_class('ICMP', classes, packet_bytes) != -1:
-                return get_ip_class('ICMP', classes, packet_bytes)
+                if (ip_class := get_ip_class('ICMP Echo Reply', classes, packet_bytes)) != -1:
+                    return ip_class
+            elif (ip_class := get_ip_class('ICMP', classes, packet_bytes)) != -1:
+                return ip_class
             return other
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
-            src_port_class = classes.get(TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other'), other)
-            return src_port_class if src_port_class != other else classes.get(TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other'), other)
-
+            src_port_service = TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
+            dst_port_service = TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
+            interesting_port_service = src_port_service if src_port_service != 'Other' else dst_port_service
+            if (ip_class := get_ip_class(interesting_port_service, classes, packet_bytes)) != -1:
+                return ip_class
+            return other
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
             # need extra logic for DNS or DNS-query and DNS-response
             src_port_service = UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
             dst_port_service = UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
-            if src_port_service == 'DNS' or dst_port_service == 'DNS':  # this will have to do with DNS
-                if 'DNS' in classes.keys():
-                    return classes.get('DNS', other)
-                elif 'DNS-query' in classes.keys() and 'DNS-response' in classes.keys():
-                    return classes.get('DNS-query', other) if dst_port_service == 'DNS' else classes.get('DNS-response', other)
-            src_port_class = classes.get(src_port_service, other)
-            return src_port_class if src_port_class != other else classes.get(dst_port_service, other)
+            # If they both are 'Other' just stop now
+            if src_port_service == 'Other' and dst_port_service == 'Other':
+                return other
+            # Need to have some extra logic here because query/response depends on which src/dst port is the DNS port number
+            if src_port_service == 'DNS' or dst_port_service == 'DNS':
+                if (ip_class := get_ip_class('DNS', classes, packet_bytes)) != -1:
+                    return ip_class
+                if src_port_service == 'DNS':
+                    if (ip_class := get_ip_class('DNS-response', classes, packet_bytes)) != -1:
+                        return ip_class
+                else:
+                    if (ip_class := get_ip_class('DNS-query', classes, packet_bytes)) != -1:
+                        return ip_class
+            else:  # not DNS
+                interesting_port_service = src_port_service if src_port_service != 'Other' else dst_port_service
+                if (ip_class := get_ip_class(interesting_port_service, classes, packet_bytes)) != -1:
+                    return ip_class
+            return other
         else:  # neither TCP nor UDP
             return other
 
@@ -1107,16 +1130,20 @@ def extract_features(X_2D = False):
 
     target_file_path = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
 
-    help_msg = 'Enter a valid class from the list below:\n'
-    help_msg += '\n'.join(class_name for class_name in CLASSES.keys()) + '\n'
-    class_split_selection = get_user_input('Enter a class to split, if desired. (Use "help" for help)', '', str, help_msg, lambda x: x in CLASSES.keys())
-    if class_split_selection:
-        classes = split_class(class_split_selection, target_file_path)
-    else:
-        classes = CLASSES
+    # loop to let the user split all the classes they want
+    classes = CLASSES.copy()
+    while True:
+        help_msg = 'Enter a valid class from the list below:\n'
+        help_msg += '\n'.join(class_name for class_name in classes.keys()) + '\n'
+        class_split_selection = get_user_input('Enter a class to split, if desired, or nothing to continue. (Use "help" for help)', '', str, help_msg, lambda x: x in classes.keys())
+        if class_split_selection:
+            classes = split_class(class_split_selection, target_file_path, classes)
+        else:
+            break
 
-    out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy')
+    out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy', OUTPUT_FILEPATH)
     y_out_filename = out_filename.split('.')[0] + '_y.npy'
+    q_out_filename = out_filename.split('.')[0] + '_q.npy'
 
     # Initialize X, y
     # y holds our classes e.g. [ARP Request, ARP Reply, ICMP Echo Request, ICMP Echo Reply, TLS, HTTP, DNS, QUIC, Other]
@@ -1170,10 +1197,12 @@ def extract_features(X_2D = False):
     # convert x and y to ndarrays
     y_arr = np.array(y, dtype=int)
     X_arr = np.array(X, dtype=int)
+    q_arr = np.array([list(classes.keys()), list(classes.values())])
 
-    # save both X and y to files
+    # save both X and y to files and q (our classes)
     np.save(y_out_filename, y_arr)
     np.save(out_filename, X_arr)
+    np.save(q_out_filename, q_arr)
 
     print('Packet class counts:')
     not_enough_packets_warning = False
@@ -1194,25 +1223,26 @@ def extract_features(X_2D = False):
     clear_screen()
 
 
-def split_class(class_selection: str, target_file_path: str):
+def split_class(class_selection: str, target_file_path: str, classes: dict[str, int]):
     """
     Helps the user split the provided class based on the data from this file
 
     Args:
         class_selection (str): the class we are trying to split
         target_file_path (str): file we are currently working with
+        classes (dict): the classes dictionary to modify
     Returns:
-        (dict): a copy of the global CLASSES dictionary but with the given class split by IP
+        (dict): the modified parameter classes after the class has been split
     """
     # TODO: Modify to work with more than IP address 
     # examine all those packets
-    class_selection_code = CLASSES.get(class_selection)
+    class_selection_code = classes.get(class_selection)
     src_ip_counts = {}
     dst_ip_counts = {}
     with open(target_file_path, 'r') as f:
         for line in f:
             packet_bytes = line.split()[1]
-            packet_class = get_packet_class(packet_bytes)
+            packet_class = get_packet_class(packet_bytes, classes=classes)
             if packet_class == class_selection_code and PacketLayers.IPV4 in get_packet_layers(packet_bytes):
                 src_ip = get_printable_ip(get_src_ip(packet_bytes))
                 dst_ip = get_printable_ip(get_dst_ip(packet_bytes))
@@ -1236,7 +1266,12 @@ def split_class(class_selection: str, target_file_path: str):
     print(help)
 
     while True:
-        ip_selections = get_user_input('Enter the numbers seperated by commas for the IP addresses to split this class on.', None, str, help, lambda x: len(x.split(',')) > 1 and all(int(i) < counter for i in x.split(','))).split(',')
+        ip_selections = get_user_input('Enter the numbers seperated by commas for the IP addresses to split this class on.', '', str, help, lambda x: not x or (len(x.split(',')) > 1 and all(int(i) < counter for i in x.split(','))))
+        if not ip_selections:  # the user entered nothing, so we should cancel this
+            clear_screen()
+            red_print('Canceling splitting on this class...\n')
+            return classes
+        ip_selections = ip_selections.split(',')
         # Make sure all of them are from either src or dst ips
         ip_selections = [int(i) for i in ip_selections]
         if not (all(int(num) < len(src_ip_counts) for num in ip_selections) or all(int(num) >= len(src_ip_counts) for num in ip_selections)):
@@ -1245,7 +1280,6 @@ def split_class(class_selection: str, target_file_path: str):
         else:
             break
 
-    classes = CLASSES.copy()
     del classes[class_selection]
 
     if ip_selections[0] < len(src_ip_counts):
@@ -1257,11 +1291,15 @@ def split_class(class_selection: str, target_file_path: str):
             classes[f'{class_selection}-dst-{list(dst_ip_counts.keys())[selection]}'] = -1  # placeholder value
     
     # go through and fix all the class number values now (not really necessary but I want to)
-    for i, key in enumerate(classes):
-        classes[key] = i
-    if CLASSES.get('Other', -1) == -1:
+    counter = 0
+    for key in classes:
+        if key == 'Other' and CLASSES['Other'] == -1:
+            continue
+        classes[key] = counter
+        counter += 1
+    if CLASSES['Other'] == -1:
         classes['Other'] = -1
-    
+
     return classes
 
   
@@ -1281,6 +1319,9 @@ def main():
     if not os.path.exists(CLEANED_FILEPATH):
         red_print(f'The path for cleaned files "{CLEANED_FILEPATH}" does not exist. Quitting...')
         sys.exit()
+    if not os.path.exists(OUTPUT_FILEPATH):
+        yellow_print(f'The path for output files does not exist...creating "{OUTPUT_FILEPATH}" now...\n')
+        os.makedirs(OUTPUT_FILEPATH)
 
     while True:
         print_menu()
