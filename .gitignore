@@ -108,6 +108,7 @@ GitHub.sublime-settings
 # This project stuff
 captures/
 cleaned/
+output/
 *.obj
 *.npy
 .pylintrc
