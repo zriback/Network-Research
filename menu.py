@@ -61,6 +61,7 @@ OUTPUT_FILEPATH = 'output'
 # Number of nibbles to extract from each packet as a feature from each packet
 # The first NUM_FEATURES/2 bytes are extracted from each packet
 NUM_FEATURES = 128
+NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
 
 SAMPLES_PER_CLASS = 500
@@ -1177,7 +1178,7 @@ def extract_features(X_2D = False):
             y.append(packet_class)
 
             # Create X and convert each hex to int value
-            nibbles = [int(let, 16) for let in packet_bytes[:num_features]]
+            nibbles = [int(''.join(c for c in let), 16) for let in zip(*[iter(packet_bytes[:num_features*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
             # pad to NUM_FEATURES length
             if len(nibbles) < num_features:
                 nibbles.extend([0] * (num_features-len(nibbles)))
