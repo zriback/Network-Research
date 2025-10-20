@@ -270,10 +270,9 @@ def print_menu():
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
     output += '\t(3) Analyze Data\n'
-    output += '\t(4) Redact Data\n'
-    output += '\t(5) Extract Features\n'
-    output += '\t(6) Extract 2D Features\n'
-    output += '\t(7) Combine Cleaned Captures'
+    output += '\t(4) Extract Features\n'
+    output += '\t(5) Extract 2D Features\n'
+    output += '\t(6) Combine Cleaned Captures'
     print(output)
 
 
@@ -411,12 +410,18 @@ def get_existing_file(message: str, default: str | None, location: str) -> str:
     return target_file_path
 
 
-def redact_data():
-    """Gets user input for what data to redact from a user inputted cleaned capture"""
-    target_filename = get_existing_file('Enter the name or number of the file to analyze. Use "help" for help', None, CLEANED_FILEPATH)
-    target_basename = os.path.basename(target_filename)
-    output_filename = get_new_file('Enter the output file name', target_basename[:target_basename.index('.txt')] + '_redacted.txt', CLEANED_FILEPATH)
-
+def get_redact_functions() -> list[partial]:
+    """Help to get list of partial functions used for redacting certain header info based on user input"""
+    def _input_validator(input: str) -> bool:
+        """Helper function to validate user input"""
+        if input == 'all':
+            return True
+        for digit_str in input.strip().split(','):
+            try:
+                int(digit_str)
+            except ValueError:
+                return False
+        return True
     # get function pointers for fields that should be redacted
     redact_func_dict = {
         0 : ['Source MAC', redact_src_mac],
@@ -437,35 +442,17 @@ def redact_data():
         help_msg += f'\t{num} - {val[0]}\n'
 
     print(help_msg)
-    user_input = get_user_input('Enter', None, str, help)
+    user_input = get_user_input('Enter. Use "help" for help.', '', str, help_msg, test_func=_input_validator)
     if user_input == 'all':
-        user_input = '1,2,3,4,5,6,7,8,9,10'
-    for num in user_input.split(','):
-        try:
-            num = int(num)
-        except ValueError:
-            clear_screen()
-            red_print('Non number entered...Quitting\n')
-            return None
-        func = redact_func_dict.get(num, None)
+        user_input = ','.join(str(index) for index in redact_func_dict)
+    if user_input == '':
+        return []
+    for num in user_input.split(','):  # _input_validator already ensures the input was valid
+        func = redact_func_dict.get(int(num), None)
         if func is None:
             continue
         redact_func_list.append(func[1])
-
-    with open(target_filename, 'r', encoding='utf-8') as target_file, open(output_filename, 'w', encoding='utf-8') as output_file:
-        for line in target_file:
-            line = line.split()
-            timestamp = line[0]
-            data = line[1]
-
-            for func in redact_func_list:
-                data = func(data)
-            output_file.write(f'{timestamp} {data} {get_packet_class(data)}\n')
-
-    # clear_screen()
-    green_print(f'Redacted data has been outputted to {output_filename}\n')
-    input('Press enter to return to the main menu...')
-    clear_screen()
+    return redact_func_list
 
 
 def capture_traffic():
@@ -1141,6 +1128,9 @@ def extract_features(X_2D = False):
             classes = split_class(class_split_selection, target_file_path, classes)
         else:
             break
+    
+    # now let the user redact an fields that they would like before extracting the features
+    redact_func_list = get_redact_functions()
 
     out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy', OUTPUT_FILEPATH)
     y_out_filename = out_filename.split('.')[0] + '_y.npy'
@@ -1159,13 +1149,11 @@ def extract_features(X_2D = False):
         # Create a list of nibbles for each packet in target_file
         for line in target_file:
             line_list = line.split()
+            if len(line_list) != 2:
+                yellow_print('WARNING: A line in the target file appears to be malformed')
+                continue
             packet_bytes = line_list[1]
-            if len(line_list) == 2:  # not redacted data, no class identifier added
-                packet_class = get_packet_class(packet_bytes, classes=classes)
-            elif len(line_list) == 3:  # is redacted data and identifier was added
-                packet_class = int(line_list[2])
-            else:
-                packet_class = -1
+            packet_class = get_packet_class(packet_bytes, classes=classes)
 
             # We don't care about this packet
             if packet_class == -1:
@@ -1176,6 +1164,10 @@ def extract_features(X_2D = False):
             # Increment count and add to y
             samples_per_class[packet_class] += 1
             y.append(packet_class)
+
+            # redact bytes if necessary before grabbing the nibbles
+            for func in redact_func_list:
+                packet_bytes = func(packet_bytes)
 
             # Create X and convert each hex to int value
             nibbles = [int(''.join(c for c in let), 16) for let in zip(*[iter(packet_bytes[:num_features*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
@@ -1343,12 +1335,10 @@ def main():
         elif user_input == 3:
             analyze_data()
         elif user_input == 4:
-            redact_data()
-        elif user_input == 5:
             extract_features()
-        elif user_input == 6:
+        elif user_input == 5:
             extract_features(X_2D=True)
-        elif user_input == 7:
+        elif user_input == 6:
             combine_cleaned_captures()
         else:
             clear_screen()
