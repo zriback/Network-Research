@@ -192,6 +192,18 @@ def yellow_print(msg: str) -> None:
     """Convenient function for printing yellow text"""
     print(YELLOW_COLOR + msg + DEFAULT_COLOR)
 
+def get_last_line(filename: str) -> str:
+    """Convenient function for returning the last line of a file efficiently"""
+    last_line = 0
+    with open(filename, 'rb') as f:
+        try:  # catch OSError in case of a one line file 
+            f.seek(-2, os.SEEK_END)
+            while f.read(1) != b'\n':
+                f.seek(-2, os.SEEK_CUR)
+        except OSError:
+            f.seek(0)
+        last_line = f.readline().decode().strip()
+    return last_line
 
 def get_printable_ip(ip: str) -> str | None:
     """Convenient function for getting printable IP address from hex bytes"""
@@ -270,9 +282,10 @@ def print_menu():
     output += '\t(1) Capture Traffic\n'
     output += '\t(2) Clean Captures\n'
     output += '\t(3) Analyze Data\n'
-    output += '\t(4) Extract Features\n'
-    output += '\t(5) Extract 2D Features\n'
-    output += '\t(6) Combine Cleaned Captures'
+    output += '\t(4) Analyze Time Series Data\n'
+    output += '\t(5) Extract Features\n'
+    output += '\t(6) Extract 2D Features\n'
+    output += '\t(7) Combine Cleaned Captures'
     print(output)
 
 
@@ -802,7 +815,7 @@ def analyze_data():
     # set interactive mode
     plt.ion()
 
-    # make 2x2 figure for displaying four plots
+    # make 2x3 figure for displaying four plots
     fig, ax = plt.subplots(nrows=2, ncols=3)
     fig.set_figheight(6)
     fig.set_figwidth(12)
@@ -888,9 +901,6 @@ def analyze_data():
     this_ax.set_xticks(bins, bins, rotation=45, ha='right', rotation_mode='anchor', size=8)
     this_ax.xaxis.set_major_formatter(FormatStrFormatter('%0.2f'))
 
-    # display the figure
-    # fig.show()
-
     # large histogram
     large_histogram_fig = plt.figure()
     large_histogram_fig.set_figheight(6)
@@ -917,6 +927,69 @@ def analyze_data():
     clear_screen()
     print()
 
+
+def extract_time_series_data(target_file_path: str, time_divisions: int) -> tuple[list[dict[int, int]], list[float]]:
+    last_micro_time = int(get_last_line(target_file_path).split()[0])
+
+    buckets: list[dict[int, int]] = [{packet_class_int:0 for packet_class_int in CLASSES.values()} for _ in range(time_divisions)]
+    bucket_cutoffs: list[float] = [i*(last_micro_time/time_divisions) for i in range(time_divisions)]
+
+    with open(target_file_path, 'r') as f:
+        for line in f:
+            line_list = line.split()
+            micro_time = int(line_list[0].strip())
+            packet_bytes = line_list[1].strip()
+            bucket_index = int(micro_time//(last_micro_time/time_divisions))
+            if bucket_index == time_divisions:  # the very last packet will otherwise get an index that is one two high
+                bucket_index -= 1
+            packet_class_int = get_packet_class(packet_bytes, CLASSES)
+            buckets[bucket_index][packet_class_int] = buckets[bucket_index].get(packet_class_int, 0) + 1
+    return buckets, bucket_cutoffs
+
+
+def time_series_analysis():
+    """Makes a graph to analysis the presence of classes over time in a dataset"""
+    target_file_path = get_existing_file('Enter the file you would like to analyze', None, CLEANED_FILEPATH)
+    target_file = os.path.basename(target_file_path)
+
+    # the number of buckets to split the packets into
+    time_divisions = 100
+    
+    time_series_data, bucket_cuttoffs = extract_time_series_data(target_file_path, time_divisions)
+    # turn bucket_cuttoffs to be in seconds instead of microseconds
+    bucket_cuttoffs = [i/1e6 for i in bucket_cuttoffs]
+
+    # do matplot charts
+    # set interactive mode
+    plt.ion()
+    fig = plt.figure()
+    fig.set_figheight(9)
+    fig.set_figwidth(18)
+    ax = fig.add_subplot(1, 1, 1)
+    ax.set_title('Packet Classes Over Time')
+    ax.set_xlabel('Packet Time (s)')
+    ax.set_ylabel('Count')
+    x_values = [i+(bucket_cuttoffs[1]-bucket_cuttoffs[0]) for i in bucket_cuttoffs]
+    for packet_class_str in CLASSES:
+        packet_class_int = CLASSES[packet_class_str]
+        counts = [d.get(packet_class_int, 0) for d in time_series_data]
+        ax.plot(x_values, counts, label=packet_class_str)
+    
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    fig.tight_layout()
+
+    ax.set_xticks(bucket_cuttoffs, [str(i) for i in bucket_cuttoffs], rotation=45, ha='right', rotation_mode='anchor', size=8)
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%0.2f'))
+
+    fig.show()
+
+    green_print('Chart is being displayed...')
+    input('Press enter to clear charts and return to the main menu...')
+
+    plt.close(fig)
+    clear_screen()
+    print()
+  
 
 def print_counts_dict(counts_dict: dict | None, max_lines: int = MAX_BAR_CHART_BARS) -> None:
     """
@@ -1335,10 +1408,12 @@ def main():
         elif user_input == 3:
             analyze_data()
         elif user_input == 4:
-            extract_features()
+            time_series_analysis()
         elif user_input == 5:
-            extract_features(X_2D=True)
+            extract_features()
         elif user_input == 6:
+            extract_features(X_2D=True)
+        elif user_input == 7:
             combine_cleaned_captures()
         else:
             clear_screen()
