@@ -53,6 +53,23 @@ class CaptureData:
     other_type_counts: Optional[dict] = None
     microsec_times: list = field(default_factory=list)
 
+@dataclass(frozen=True)
+class Conversation:
+    """
+    Dataclass for storing and tracking different conversations in a capture
+    """
+    src_ip: str
+    dst_ip: str
+    protocol: str
+
+    def __eq__(self, other):
+        if type(other) != Conversation:
+            return False
+        return self.protocol == other.protocol and {self.src_ip, self.dst_ip} == {other.src_ip, other.dst_ip}
+    
+    def __hash__(self):
+        return hash((self.protocol, frozenset((self.src_ip, self.dst_ip))))
+
 # File paths for directories containing raw captures, cleaned files, and for output files
 CAPTURES_FILEPATH = 'captures'
 CLEANED_FILEPATH = 'cleaned'
@@ -63,6 +80,7 @@ OUTPUT_FILEPATH = 'output'
 NUM_FEATURES = 128
 NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
+CONVERSATION_LENGTH = 100
 
 SAMPLES_PER_CLASS = 500
 
@@ -285,7 +303,8 @@ def print_menu():
     output += '\t(4) Analyze Time Series Data\n'
     output += '\t(5) Extract Features\n'
     output += '\t(6) Extract 2D Features\n'
-    output += '\t(7) Combine Cleaned Captures'
+    output += '\t(7) Extract Conversations\n'
+    output += '\t(8) Combine Cleaned Captures'
     print(output)
 
 
@@ -989,7 +1008,70 @@ def time_series_analysis():
     plt.close(fig)
     clear_screen()
     print()
-  
+
+
+def extract_conversation_features():
+    """
+    Extract features in the form of conversations from a cleaned file.
+    Each conversation is a 2D array that is num_packets in conversation * num_features/nibbles
+    All conversations must be padded/truncated to a certain length specified by CONVERSATION_LENGTH
+    TCP and UDP conversations are identified using src/dst IP address matching
+    """
+    target_file_path = get_existing_file('Enter the file you would like to analyze', None, CLEANED_FILEPATH)
+
+    out_filename = get_new_file('Enter the relative path for the output (.npy) file', 'out.npy', OUTPUT_FILEPATH)
+    y_out_filename = out_filename.split('.')[0] + '_y.npy'
+
+    # Apparently it is more efficient to convert these to numpy arrays at the end
+    X = []
+    y = []
+    conversation_dict = dict()
+    next_index = 0
+
+    # Counters
+    conversations_saved = 0
+    packets_saved = 0
+
+    with open(target_file_path, 'r', encoding='utf-8') as target_file:
+        for line in target_file:
+            line_list = line.strip().split()
+            packet_bytes = line_list[1]
+
+            packet_layers = get_packet_layers(packet_bytes)
+
+            if PacketLayers.TCP in packet_layers or PacketLayers.UDP in packet_layers:
+                protocol = 'TCP' if PacketLayers.TCP in packet_layers else 'UDP'
+                conversation = Conversation(get_src_ip(packet_bytes), get_dst_ip(packet_bytes), protocol)
+                if conversation not in conversation_dict:
+                    conversation_dict[conversation] = next_index
+                    X.append([])
+                    y.append(0 if protocol == 'TCP' else 1)
+
+                    next_index += 1
+                    conversations_saved += 1
+                
+                conversation_index = conversation_dict[conversation]
+                if len(X[conversation_index]) >= CONVERSATION_LENGTH:  # we already have CONVERSATION_LENGTH of these packets. Don't need more
+                    continue
+
+                nibbles = [int(''.join(let), 16) for let in zip(*[iter(packet_bytes[:NUM_FEATURES*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
+                # pad nibbles out to NUM_FEATURES
+                if len(nibbles) < NUM_FEATURES:
+                    nibbles.extend([0]*(NUM_FEATURES-len(nibbles)))
+                X[conversation_index].append(nibbles)
+                packets_saved += 1
+        
+        # Must pad each conversation out to CONVERSATION_LENGTH before converting to a numpy array
+        for conversation_array in X:
+            conversation_array.extend([[0]*NUM_FEATURES]*(CONVERSATION_LENGTH-len(conversation_array)))
+
+        np.save(out_filename, np.array(X, dtype=int))
+        np.save(y_out_filename, np.array(y, dtype=int))
+
+        green_print(f'Saved {conversations_saved} conversations and {packets_saved} packets.\n')
+        input('Press enter to return to the main menu...')
+        clear_screen()
+
 
 def print_counts_dict(counts_dict: dict | None, max_lines: int = MAX_BAR_CHART_BARS) -> None:
     """
@@ -1414,6 +1496,8 @@ def main():
         elif user_input == 6:
             extract_features(X_2D=True)
         elif user_input == 7:
+            extract_conversation_features()
+        elif user_input == 8:
             combine_cleaned_captures()
         else:
             clear_screen()
