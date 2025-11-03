@@ -40,6 +40,9 @@ class PacketLayers(Enum):
     ICMP = 5
     TCP = 6
     UDP = 7
+    HTTP = 8
+    DNS = 9
+
 
 @dataclass
 class CaptureData:
@@ -70,17 +73,17 @@ class Conversation:
     """
     Dataclass for storing and tracking different conversations in a capture
     """
-    src_ip: str
-    dst_ip: str
+    src_addr: str
+    dst_addr: str
     protocol: Enum
 
     def __eq__(self, other):
         if type(other) != Conversation:
             return False
-        return self.protocol == other.protocol and {self.src_ip, self.dst_ip} == {other.src_ip, other.dst_ip}
+        return self.protocol == other.protocol and {self.src_addr, self.dst_addr} == {other.src_addr, other.dst_addr}
     
     def __hash__(self):
-        return hash((self.protocol, frozenset((self.src_ip, self.dst_ip))))
+        return hash((self.protocol, frozenset((self.src_addr, self.dst_addr))))
 
 # File paths for directories containing raw captures, cleaned files, and for output files
 CAPTURES_FILEPATH = 'captures'
@@ -201,7 +204,8 @@ CLASSES = {
 
 CONVERSATION_CLASSES = {
     PacketLayers.TCP,
-    PacketLayers.UDP
+    PacketLayers.UDP,
+    PacketLayers.HTTP
 }
 
 def green_print(msg: str) -> None:
@@ -1048,13 +1052,13 @@ def extract_conversation_features():
             layer_intersection = packet_layers & CONVERSATION_CLASSES
             if not layer_intersection:
                 continue
-            elif len(layer_intersection) > 1:
-                yellow_print('Found a packet that could belong to multiple classes:')
-                print(', '.join(layer.name for layer in layer_intersection))
-                continue
             else:
-                protocol = list(layer_intersection)[0]
+                # If there are multiple, use whichever one has the higher enum value
+                # e.g. HTTP will be selected over TCP
+                protocol = max(layer_intersection, key=lambda x: x.value)
 
+
+            
             conversation = Conversation(get_src_ip(packet_bytes), get_dst_ip(packet_bytes), protocol)
             if conversation not in conversation_dict:
                 conversation_dict[conversation] = next_index
@@ -1179,8 +1183,12 @@ def get_packet_layers(packet_bytes: str) -> set[Enum]:
             layers.add(PacketLayers.ICMP)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
             layers.add(PacketLayers.TCP)
+            if TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP' or TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP':
+                layers.add(PacketLayers.HTTP)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
             layers.add(PacketLayers.UDP)
+            if UDP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'DNS' or UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)) == 'DNS':
+                layers.add(PacketLayers.DNS)
     else:
         layers.add(PacketLayers.IPV6)
 
