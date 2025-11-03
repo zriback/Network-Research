@@ -29,6 +29,18 @@ from typing import Callable, Any
 # "Linux" or "Windows"
 OS_NAME = platform.system()
 
+class PacketLayers(Enum):
+    """
+    Enum containing all layers we are interested in
+    """
+    ETHERNET = 1
+    IPV4 = 2
+    IPV6 = 3
+    ARP = 4
+    ICMP = 5
+    TCP = 6
+    UDP = 7
+
 @dataclass
 class CaptureData:
     """
@@ -60,7 +72,7 @@ class Conversation:
     """
     src_ip: str
     dst_ip: str
-    protocol: str
+    protocol: Enum
 
     def __eq__(self, other):
         if type(other) != Conversation:
@@ -80,7 +92,8 @@ OUTPUT_FILEPATH = 'output'
 NUM_FEATURES = 128
 NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
-CONVERSATION_LENGTH = 100
+MAX_CONVERSATION_LENGTH = 100
+MIN_CONVERSATION_LENGTH = 86
 
 SAMPLES_PER_CLASS = 500
 
@@ -166,18 +179,6 @@ ICMP_TYPES = {
     '08' : 'ICMP Echo Request'
 }
 
-class PacketLayers(Enum):
-    """
-    Enum containing all layers we are interested in
-    """
-    ETHERNET = 1
-    IPV4 = 2
-    IPV6 = 3
-    ARP = 4
-    ICMP = 5
-    TCP = 6
-    UDP = 7
-
 # Defines the classes that we care about
 # There must be an "other" class, but if it is defined as -1, it means we do not care about it
 CLASSES = {
@@ -196,6 +197,11 @@ CLASSES = {
     'SSDP' : 12,
     'STP' : 13,
     'Other' : -1
+}
+
+CONVERSATION_CLASSES = {
+    PacketLayers.TCP,
+    PacketLayers.UDP
 }
 
 def green_print(msg: str) -> None:
@@ -1039,36 +1045,56 @@ def extract_conversation_features():
 
             packet_layers = get_packet_layers(packet_bytes)
 
-            if PacketLayers.TCP in packet_layers or PacketLayers.UDP in packet_layers:
-                protocol = 'TCP' if PacketLayers.TCP in packet_layers else 'UDP'
-                conversation = Conversation(get_src_ip(packet_bytes), get_dst_ip(packet_bytes), protocol)
-                if conversation not in conversation_dict:
-                    conversation_dict[conversation] = next_index
-                    X.append([])
-                    y.append(0 if protocol == 'TCP' else 1)
+            layer_intersection = packet_layers & CONVERSATION_CLASSES
+            if not layer_intersection:
+                continue
+            elif len(layer_intersection) > 1:
+                yellow_print('Found a packet that could belong to multiple classes:')
+                print(', '.join(layer.name for layer in layer_intersection))
+                continue
+            else:
+                protocol = list(layer_intersection)[0]
 
-                    next_index += 1
-                    conversations_saved += 1
-                
-                conversation_index = conversation_dict[conversation]
-                if len(X[conversation_index]) >= CONVERSATION_LENGTH:  # we already have CONVERSATION_LENGTH of these packets. Don't need more
-                    continue
+            conversation = Conversation(get_src_ip(packet_bytes), get_dst_ip(packet_bytes), protocol)
+            if conversation not in conversation_dict:
+                conversation_dict[conversation] = next_index
+                X.append([])
+                y.append(protocol.value)
 
-                nibbles = [int(''.join(let), 16) for let in zip(*[iter(packet_bytes[:NUM_FEATURES*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
-                # pad nibbles out to NUM_FEATURES
-                if len(nibbles) < NUM_FEATURES:
-                    nibbles.extend([0]*(NUM_FEATURES-len(nibbles)))
-                X[conversation_index].append(nibbles)
-                packets_saved += 1
-        
-        # Must pad each conversation out to CONVERSATION_LENGTH before converting to a numpy array
-        for conversation_array in X:
-            conversation_array.extend([[0]*NUM_FEATURES]*(CONVERSATION_LENGTH-len(conversation_array)))
+                next_index += 1
+                conversations_saved += 1
+            
+            conversation_index = conversation_dict[conversation]
+            if len(X[conversation_index]) >= MAX_CONVERSATION_LENGTH:  # we already have CONVERSATION_LENGTH of these packets. Don't need more
+                continue
+
+            nibbles = [int(''.join(let), 16) for let in zip(*[iter(packet_bytes[:NUM_FEATURES*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
+            # pad nibbles out to NUM_FEATURES
+            if len(nibbles) < NUM_FEATURES:
+                nibbles.extend([0]*(NUM_FEATURES-len(nibbles)))
+            X[conversation_index].append(nibbles)
+            packets_saved += 1
+
+        # Remove conversations that are below MIN_CONVERSATION_LENGTH and pad conversations to MAX_CONVERSATION_LENGTH\
+        # NOTE: Could do this more efficiently with numpy vectorization approach? Task for the future
+        for i in range(len(X)-1, -1, -1):
+            conversation_array = X[i]
+            if len(conversation_array) < MIN_CONVERSATION_LENGTH:
+                conversations_saved -= 1
+                packets_saved -= len(conversation_array)
+                del X[i]
+                del y[i]
+            elif len(conversation_array) < MAX_CONVERSATION_LENGTH:
+                conversation_array.extend([[0]*NUM_FEATURES]*(MAX_CONVERSATION_LENGTH-len(conversation_array)))
 
         np.save(out_filename, np.array(X, dtype=int))
         np.save(y_out_filename, np.array(y, dtype=int))
 
-        green_print(f'Saved {conversations_saved} conversations and {packets_saved} packets.\n')
+        green_print(f'Saved {conversations_saved} conversations and {packets_saved} packets.')
+        protocols, counts = np.unique_counts(y)
+        print_counts_dict(dict(zip([PacketLayers(protocol).name for protocol in protocols], counts)))
+        
+        print()
         input('Press enter to return to the main menu...')
         clear_screen()
 
@@ -1139,24 +1165,24 @@ def print_text_analysis(capture_data: CaptureData) -> None:
 
 # returns a list of packet layers corresponding to PACKET_LAYERS enum
 # used for checking whether data at specific locations should be redacted
-def get_packet_layers(packet_bytes: str) -> list[int]:
+def get_packet_layers(packet_bytes: str) -> set[Enum]:
     """Find all the encapsulated layers in this packet"""
-    layers = []
+    layers = set()
     # for right now, just assume everything is ethernet
-    layers.append(PacketLayers.ETHERNET)
+    layers.add(PacketLayers.ETHERNET)
 
     if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':
-        layers.append(PacketLayers.ARP)
+        layers.add(PacketLayers.ARP)
     elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':
-        layers.append(PacketLayers.IPV4)
+        layers.add(PacketLayers.IPV4)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':
-            layers.append(PacketLayers.ICMP)
+            layers.add(PacketLayers.ICMP)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
-            layers.append(PacketLayers.TCP)
+            layers.add(PacketLayers.TCP)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
-            layers.append(PacketLayers.UDP)
+            layers.add(PacketLayers.UDP)
     else:
-        layers.append(PacketLayers.IPV6)
+        layers.add(PacketLayers.IPV6)
 
     return layers
 
