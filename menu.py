@@ -95,8 +95,8 @@ OUTPUT_FILEPATH = 'output'
 NUM_FEATURES = 128
 NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
-MAX_CONVERSATION_LENGTH = 100
-MIN_CONVERSATION_LENGTH = 86
+MAX_CONVERSATION_LENGTH = 25
+MIN_CONVERSATION_LENGTH = 1
 
 SAMPLES_PER_CLASS = 500
 
@@ -114,6 +114,8 @@ DST_MAC_LOC = 0
 ETH_TYPE_LOC = 12
 SRC_IP_LOC = 26
 DST_IP_LOC = 30
+SRC_IPV6_LOC = 22
+DST_IPV6_LOC = 38
 IP_PROTO_LOC = 23
 IPV6_NEXT_HEADER_LOC = 20
 SRC_PORT_LOC = 34
@@ -205,7 +207,10 @@ CLASSES = {
 CONVERSATION_CLASSES = {
     PacketLayers.TCP,
     PacketLayers.UDP,
-    PacketLayers.HTTP
+    PacketLayers.HTTP,
+    PacketLayers.DNS,
+    PacketLayers.ICMP,
+    PacketLayers.ARP
 }
 
 def green_print(msg: str) -> None:
@@ -255,6 +260,8 @@ get_src_mac = partial(get_header_field, loc=SRC_MAC_LOC, length=6)
 get_dst_mac = partial(get_header_field, loc=DST_MAC_LOC, length=6)
 get_src_ip = partial(get_header_field, loc=SRC_IP_LOC, length=4)
 get_dst_ip = partial(get_header_field, loc=DST_IP_LOC, length=4)
+get_src_ipv6 = partial(get_header_field, loc=SRC_IPV6_LOC, length=16)
+get_dst_ipv6 = partial(get_header_field, loc=DST_IPV6_LOC, length=16)
 get_eth_type = partial(get_header_field, loc=ETH_TYPE_LOC, length=2)
 get_ip_proto = partial(get_header_field, loc=IP_PROTO_LOC, length=1)
 get_ipv6_proto = partial(get_header_field, loc=IPV6_NEXT_HEADER_LOC, length=1)
@@ -1025,7 +1032,9 @@ def extract_conversation_features():
     Extract features in the form of conversations from a cleaned file.
     Each conversation is a 2D array that is num_packets in conversation * num_features/nibbles
     All conversations must be padded/truncated to a certain length specified by CONVERSATION_LENGTH
-    TCP and UDP conversations are identified using src/dst IP address matching
+    Protocols identified in CONVERSATION_CLASSES are identified. IP address is used if it is available, otherwise
+    ethernet addresses are used (e.g. ARP conversations could not use IP address). If a packet could belong to two conversation
+    classes, the more specific one is used (e.g. HTTP packet could be HTTP conversation or TCP conversation, if both are being captured)
     """
     target_file_path = get_existing_file('Enter the file you would like to analyze', None, CLEANED_FILEPATH)
 
@@ -1057,9 +1066,20 @@ def extract_conversation_features():
                 # e.g. HTTP will be selected over TCP
                 protocol = max(layer_intersection, key=lambda x: x.value)
 
+            if PacketLayers.IPV4 in packet_layers:
+                get_src_addr = get_src_ip
+                get_dst_addr = get_dst_ip
+            elif PacketLayers.IPV6 in packet_layers:
+                get_src_addr = get_src_ipv6
+                get_dst_addr = get_dst_ipv6
+            elif PacketLayers.ETHERNET in packet_layers:
+                get_src_addr = get_src_mac
+                get_dst_addr = get_dst_mac
+            else:
+                yellow_print('Encountered a packet that does not have an layer from which to pull an address. Skipping...')
+                continue
 
-            
-            conversation = Conversation(get_src_ip(packet_bytes), get_dst_ip(packet_bytes), protocol)
+            conversation = Conversation(get_src_addr(packet_bytes), get_dst_addr(packet_bytes), protocol)
             if conversation not in conversation_dict:
                 conversation_dict[conversation] = next_index
                 X.append([])
@@ -1183,7 +1203,7 @@ def get_packet_layers(packet_bytes: str) -> set[Enum]:
             layers.add(PacketLayers.ICMP)
         if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
             layers.add(PacketLayers.TCP)
-            if TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP' or TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP':
+            if TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP' or TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)) == 'HTTP':
                 layers.add(PacketLayers.HTTP)
         elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
             layers.add(PacketLayers.UDP)
