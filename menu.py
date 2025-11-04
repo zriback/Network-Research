@@ -75,15 +75,19 @@ class Conversation:
     """
     src_addr: str
     dst_addr: str
+    src_port: str
+    dst_port: str
     protocol: Enum
 
     def __eq__(self, other):
         if type(other) != Conversation:
             return False
-        return self.protocol == other.protocol and {self.src_addr, self.dst_addr} == {other.src_addr, other.dst_addr}
+        return self.protocol == other.protocol and \
+            {self.src_addr, self.dst_addr} == {other.src_addr, other.dst_addr} and \
+            {self.src_port, self.dst_port} == {other.src_port, other.dst_port}
     
     def __hash__(self):
-        return hash((self.protocol, frozenset((self.src_addr, self.dst_addr))))
+        return hash((self.protocol, frozenset((self.src_addr, self.dst_addr)), frozenset((self.src_port, self.dst_port))))
 
 # File paths for directories containing raw captures, cleaned files, and for output files
 CAPTURES_FILEPATH = 'captures'
@@ -205,12 +209,7 @@ CLASSES = {
 }
 
 CONVERSATION_CLASSES = {
-    PacketLayers.TCP,
-    PacketLayers.UDP,
-    PacketLayers.HTTP,
-    PacketLayers.DNS,
-    PacketLayers.ICMP,
-    PacketLayers.ARP
+    PacketLayers.TCP
 }
 
 def green_print(msg: str) -> None:
@@ -1066,6 +1065,7 @@ def extract_conversation_features():
                 # e.g. HTTP will be selected over TCP
                 protocol = max(layer_intersection, key=lambda x: x.value)
 
+            # Find the correct src/dst address to use depending on what layers are present
             if PacketLayers.IPV4 in packet_layers:
                 get_src_addr = get_src_ip
                 get_dst_addr = get_dst_ip
@@ -1079,7 +1079,15 @@ def extract_conversation_features():
                 yellow_print('Encountered a packet that does not have an layer from which to pull an address. Skipping...')
                 continue
 
-            conversation = Conversation(get_src_addr(packet_bytes), get_dst_addr(packet_bytes), protocol)
+            # We must use ports to distinguish this conversation if it has a UDP or TCP layer
+            if PacketLayers.TCP in packet_layers or PacketLayers.UDP in packet_layers:
+                _get_src_port = get_src_port
+                _get_dst_port = get_dst_port
+            else:  # If it does not, fill those with dummy data
+                _get_src_port = lambda x: '0000'
+                _get_dst_port = lambda x: '0000'
+
+            conversation = Conversation(get_src_addr(packet_bytes), get_dst_addr(packet_bytes), _get_src_port(packet_bytes), _get_dst_port(packet_bytes), protocol)
             if conversation not in conversation_dict:
                 conversation_dict[conversation] = next_index
                 X.append([])
