@@ -101,10 +101,11 @@ TRAINED_WEIGHTS_FILEPATH = 'params.pth'
 NUM_FEATURES = 128
 NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
-MAX_CONVERSATION_LENGTH = 25
-MIN_CONVERSATION_LENGTH = 1
+MAX_CONVERSATION_LENGTH = 50
+MIN_CONVERSATION_LENGTH = 25
 
 SAMPLES_PER_CLASS = 1000
+CONVERSATION_SAMPLES_PER_CLASS = 500
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -211,7 +212,8 @@ CLASSES = {
 }
 
 CONVERSATION_CLASSES = {
-    PacketLayers.TCP
+    PacketLayers.TCP,
+    PacketLayers.UDP,
 }
 
 def green_print(msg: str) -> None:
@@ -1063,10 +1065,10 @@ def extract_conversation_features():
             layer_intersection = packet_layers & CONVERSATION_CLASSES
             if not layer_intersection:
                 continue
-            else:
-                # If there are multiple, use whichever one has the higher enum value
-                # e.g. HTTP will be selected over TCP
-                protocol = max(layer_intersection, key=lambda x: x.value)
+            
+            # If there are multiple, use whichever one has the higher enum value
+            # e.g. HTTP will be selected over TCP
+            protocol = max(layer_intersection, key=lambda x: x.value)
 
             # Find the correct src/dst address to use depending on what layers are present
             if PacketLayers.IPV4 in packet_layers:
@@ -1091,7 +1093,7 @@ def extract_conversation_features():
                 _get_dst_port = lambda x: '0000'
 
             conversation = Conversation(get_src_addr(packet_bytes), get_dst_addr(packet_bytes), _get_src_port(packet_bytes), _get_dst_port(packet_bytes), protocol)
-            if conversation not in conversation_dict:
+            if conversation not in conversation_dict:  # this is a new conversation
                 conversation_dict[conversation] = next_index
                 X.append([])
                 y.append(protocol.value)
@@ -1110,26 +1112,42 @@ def extract_conversation_features():
             X[conversation_index].append(nibbles)
             packets_saved += 1
 
-        # Remove conversations that are below MIN_CONVERSATION_LENGTH and pad conversations to MAX_CONVERSATION_LENGTH\
+        # Remove conversations that are below MIN_CONVERSATION_LENGTH and pad conversations to MAX_CONVERSATION_LENGTH
         # NOTE: Could do this more efficiently with numpy vectorization approach? Task for the future
+        samples_per_class = {pl.value: 0 for pl in CONVERSATION_CLASSES}
         for i in range(len(X)-1, -1, -1):
             conversation_array = X[i]
-            if len(conversation_array) < MIN_CONVERSATION_LENGTH:
+            protocol = y[i]
+            # remove this conversation if it is too short or we already have enough conversations of this class (protocol)
+            if len(conversation_array) < MIN_CONVERSATION_LENGTH or samples_per_class[protocol] >= CONVERSATION_SAMPLES_PER_CLASS:
                 conversations_saved -= 1
                 packets_saved -= len(conversation_array)
                 del X[i]
                 del y[i]
-            elif len(conversation_array) < MAX_CONVERSATION_LENGTH:
+                continue
+            if len(conversation_array) < MAX_CONVERSATION_LENGTH:
                 # Warning!! The way we extend this list, they are all the same one. A change in one will be seen on all of them
                 # That is okay for now, but it could cause problems in the future
                 conversation_array.extend([[0]*NUM_FEATURES]*(MAX_CONVERSATION_LENGTH-len(conversation_array)))
+            samples_per_class[protocol] += 1
+            
 
         np.save(out_filename, np.array(X, dtype=int))
         np.save(y_out_filename, np.array(y, dtype=int))
 
         green_print(f'Saved {conversations_saved} conversations and {packets_saved} packets.')
-        protocols, counts = np.unique_counts(y)
-        print_counts_dict(dict(zip([PacketLayers(protocol).name for protocol in protocols], counts)))
+
+        print('Conversation Class Counts:')
+        not_enough_packets_warning = False
+        for packet_class, count in samples_per_class.items():
+            if count == 0:
+                continue
+            print(f'{PacketLayers(packet_class).name:.<40}{count}')
+            if count < CONVERSATION_SAMPLES_PER_CLASS:
+                not_enough_packets_warning = True
+        print()
+        if not_enough_packets_warning:
+            yellow_print(f'WARNING: One or more classes do not have enough packets ({CONVERSATION_SAMPLES_PER_CLASS})!\n')
         
         print()
         input('Press enter to return to the main menu...')
