@@ -94,6 +94,8 @@ CAPTURES_FILEPATH = 'captures'
 CLEANED_FILEPATH = 'cleaned'
 OUTPUT_FILEPATH = 'output'
 
+TRAINED_WEIGHTS_FILEPATH = 'params.pth'
+
 # Number of nibbles to extract from each packet as a feature from each packet
 # The first NUM_FEATURES/2 bytes are extracted from each packet
 NUM_FEATURES = 128
@@ -102,7 +104,7 @@ CNN_FEATURES_DIMENSION = 14
 MAX_CONVERSATION_LENGTH = 25
 MIN_CONVERSATION_LENGTH = 1
 
-SAMPLES_PER_CLASS = 500
+SAMPLES_PER_CLASS = 1000
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -320,7 +322,8 @@ def print_menu():
     output += '\t(5) Extract Features\n'
     output += '\t(6) Extract 2D Features\n'
     output += '\t(7) Extract Conversations\n'
-    output += '\t(8) Combine Cleaned Captures'
+    output += '\t(8) Combine Cleaned Captures\n'
+    output += '\t(9) Test Trained Model'
     print(output)
 
 
@@ -1117,6 +1120,8 @@ def extract_conversation_features():
                 del X[i]
                 del y[i]
             elif len(conversation_array) < MAX_CONVERSATION_LENGTH:
+                # Warning!! The way we extend this list, they are all the same one. A change in one will be seen on all of them
+                # That is okay for now, but it could cause problems in the future
                 conversation_array.extend([[0]*NUM_FEATURES]*(MAX_CONVERSATION_LENGTH-len(conversation_array)))
 
         np.save(out_filename, np.array(X, dtype=int))
@@ -1129,6 +1134,110 @@ def extract_conversation_features():
         print()
         input('Press enter to return to the main menu...')
         clear_screen()
+
+
+def test_trained_model() -> None:
+    """
+    Load the weights from TRAINED_WEIGHTS_FILEPATH and the model using import
+    Run a cleaned file through the model and calculate the accuracy
+    """
+    try:
+        import torch
+        from model import NetModel
+
+        # Use default hyperparameters
+        net_model = NetModel()
+        net_model.load_state_dict(torch.load(TRAINED_WEIGHTS_FILEPATH))
+        net_model.eval()  # put us in eval mode
+    except ImportError:
+        red_print('Something went wrong while importing the model from model.py')
+        input('Press enter to return to the main menu...')
+        clear_screen()
+        return
+    except:
+        red_print('Something went wrong while loading the model weights.')
+        input('Press enter to return to the main menu...')
+        clear_screen()
+        return
+    
+    green_print('\nSuccessfully loaded the model and weights!\n')
+
+    # Get the cleaned file and make the test structures
+    target_filepath = get_existing_file('Enter a cleaned file with which to test the model', None, CLEANED_FILEPATH)
+
+    X = []
+    y = []
+
+    # Loop to extract the features from this file
+    with open(target_filepath, 'r', encoding='utf-8') as target_file:
+        for line in target_file:
+            line_list = line.split()
+            if len(line_list) != 2:
+                yellow_print('WARNING: A line in this file appears to be malformed.')
+                continue
+            packet_bytes = line_list[1]
+            packet_class = get_packet_class(packet_bytes, CLASSES)
+            # This could be an 'Other' packet that we should ignore if this returns -1
+            if packet_class == -1:
+                continue
+
+            nibbles = [int(''.join(c for c in let), 16) for let in zip(*[iter(packet_bytes[:NUM_FEATURES*NIBBLES_PER_FEATURE])]*NIBBLES_PER_FEATURE)]
+            # pad to NUM_FEATURES length
+            if len(nibbles) < NUM_FEATURES:
+                nibbles.extend([0] * (NUM_FEATURES-len(nibbles)))
+            
+            X.append(nibbles)
+            y.append(packet_class)
+    
+    X_tensor = torch.tensor(X, dtype=torch.float32)
+    y_tensor = torch.tensor(y, dtype=torch.int16)
+
+    clear_screen()
+    print(f'Extracted {X_tensor.shape[0]} packets')
+    
+    # Do the testing!
+    correct_counter = 0
+    num_classes = net_model.output.out_features
+    with torch.no_grad():
+        outputs = net_model(X_tensor)
+        _, predicted = torch.max(outputs, 1)
+        correct_counter = (predicted == y_tensor).sum().item()
+
+        # Get true/predicted bin counts
+        true_class_bins = torch.bincount(y_tensor, minlength=num_classes)
+        predicted_class_bins = torch.bincount(predicted, minlength=num_classes)
+
+        # Make confusion matrix
+        indices = y_tensor * num_classes + predicted
+        cm_flat = torch.bincount(indices, minlength=num_classes**2)
+        cm = cm_flat.reshape(num_classes, num_classes)    
+
+
+    green_print('\nTesting complete!')
+    print(f'Accuracy: {100*(correct_counter/len(y)):.2f}%')
+
+    # Print true counts and predicted counts
+    print('\nTrue/Predicted Class Counts:')
+    reverse_classes = dict(zip(CLASSES.values(), CLASSES.keys()))
+    for class_index, pair in enumerate(zip(true_class_bins, predicted_class_bins)):
+        true_count, predicted_count = pair
+        print(f'{reverse_classes[class_index]: <20} True: {true_count: <8} Predicted: {predicted_count: <8}')
+    
+    print()
+
+    # Print confusion matrix (rows are true index, columns are predicted)
+    print(' '*20, end='')
+    print(''.join(f'{reverse_classes[i]: <20}' for i in range(cm.shape[0])))
+    for i, row in enumerate(cm):
+        for j, val in enumerate(row):
+            color = GREEN_COLOR if i == j else RED_COLOR
+            if j == 0:  # print the row header
+                print(f'{reverse_classes[i]: <20}', end='')
+            print(f'{color}{val: <20}{DEFAULT_COLOR}', end='')
+        print()
+
+    input('\nPress enter to return to the main menu...')
+    clear_screen()
 
 
 def print_counts_dict(counts_dict: dict | None, max_lines: int = MAX_BAR_CHART_BARS) -> None:
@@ -1561,6 +1670,8 @@ def main():
             extract_conversation_features()
         elif user_input == 8:
             combine_cleaned_captures()
+        elif user_input == 9:
+            test_trained_model()
         else:
             clear_screen()
             red_print('Enter the number for a valid option\n')
