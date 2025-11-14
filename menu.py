@@ -1130,10 +1130,12 @@ def extract_conversation_features():
                 # That is okay for now, but it could cause problems in the future
                 conversation_array.extend([[0]*NUM_FEATURES]*(MAX_CONVERSATION_LENGTH-len(conversation_array)))
             samples_per_class[protocol] += 1
-            
+        
+        # Before saving, y MUST be only lables 0..n where n is the number of classes
+        _, y_label_encoded = np.unique(y, return_inverse=True)
 
         np.save(out_filename, np.array(X, dtype=int))
-        np.save(y_out_filename, np.array(y, dtype=int))
+        np.save(y_out_filename, np.array(y_label_encoded, dtype=int))
 
         green_print(f'Saved {conversations_saved} conversations and {packets_saved} packets.')
 
@@ -1172,8 +1174,9 @@ def test_trained_model() -> None:
         input('Press enter to return to the main menu...')
         clear_screen()
         return
-    except:
+    except Exception as e:
         red_print('Something went wrong while loading the model weights.')
+        print(e)
         input('Press enter to return to the main menu...')
         clear_screen()
         return
