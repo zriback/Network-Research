@@ -34,14 +34,22 @@ class PacketLayers(Enum):
     Enum containing all layers we are interested in
     """
     ETHERNET = 1
-    IPV4 = 2
-    IPV6 = 3
-    ARP = 4
-    ICMP = 5
-    TCP = 6
-    UDP = 7
-    HTTP = 8
-    DNS = 9
+    ETHERNET_8023 = 2
+    IPV4 = 3
+    IPV6 = 4
+    ARP = 5
+    ICMP = 6
+    ICMPv6 = 7
+    TCP = 8
+    UDP = 9
+    TLS = 11
+    HTTP = 12
+    QUIC = 13
+    DNS = 14
+    MDNS = 15
+    SSDP = 16
+    STP = 17
+    NBNS = 18
 
 
 @dataclass
@@ -101,11 +109,11 @@ TRAINED_WEIGHTS_FILEPATH = 'params.pth'
 NUM_FEATURES = 128
 NIBBLES_PER_FEATURE = 1
 CNN_FEATURES_DIMENSION = 14
-MAX_CONVERSATION_LENGTH = 50
-MIN_CONVERSATION_LENGTH = 25
+MAX_CONVERSATION_LENGTH = 15
+MIN_CONVERSATION_LENGTH = 3
 
 SAMPLES_PER_CLASS = 1000
-CONVERSATION_SAMPLES_PER_CLASS = 500
+CONVERSATION_SAMPLES_PER_CLASS = 80
 
 # Maximum number of bars to display on a bar chart
 MAX_BAR_CHART_BARS = 10
@@ -212,8 +220,13 @@ CLASSES = {
 }
 
 CONVERSATION_CLASSES = {
-    PacketLayers.TCP,
     PacketLayers.UDP,
+    PacketLayers.TCP,
+    PacketLayers.HTTP,
+    PacketLayers.QUIC,
+    PacketLayers.DNS,
+    PacketLayers.TLS,
+    PacketLayers.ARP
 }
 
 def green_print(msg: str) -> None:
@@ -1077,7 +1090,7 @@ def extract_conversation_features():
             elif PacketLayers.IPV6 in packet_layers:
                 get_src_addr = get_src_ipv6
                 get_dst_addr = get_dst_ipv6
-            elif PacketLayers.ETHERNET in packet_layers:
+            elif PacketLayers.ETHERNET in packet_layers or PacketLayers.ETHERNET_8023 in packet_layers:
                 get_src_addr = get_src_mac
                 get_dst_addr = get_dst_mac
             else:
@@ -1330,27 +1343,66 @@ def print_text_analysis(capture_data: CaptureData) -> None:
 def get_packet_layers(packet_bytes: str) -> set[Enum]:
     """Find all the encapsulated layers in this packet"""
     layers = set()
-    # for right now, just assume everything is ethernet
-    layers.add(PacketLayers.ETHERNET)
 
-    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':
-        layers.add(PacketLayers.ARP)
-    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':
-        layers.add(PacketLayers.IPV4)
-        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':
-            layers.add(PacketLayers.ICMP)
-        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
-            layers.add(PacketLayers.TCP)
-            if TCP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'HTTP' or TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes)) == 'HTTP':
-                layers.add(PacketLayers.HTTP)
-        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
-            layers.add(PacketLayers.UDP)
-            if UDP_SERVICE_PORTS.get(get_src_port(packet_bytes)) == 'DNS' or UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes)) == 'DNS':
-                layers.add(PacketLayers.DNS)
-    else:
-        layers.add(PacketLayers.IPV6)
+    eth_type = get_eth_type(packet_bytes)
+    if int(eth_type, 16) >= ETH_802_3_THRESHOLD:  # normal Ethernet packet
+        layers.add(PacketLayers.ETHERNET)
+        if ETH_TYPES.get(eth_type) == 'ARP':
+            layers.add(PacketLayers.ARP)
+        elif ETH_TYPES.get(eth_type) == 'IPv4':
+            layers.add(PacketLayers.IPV4)
+            if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':
+                layers.add(PacketLayers.ICMP)
+            if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':
+                layers.add(PacketLayers.TCP)
+                class_from_port = get_class_from_port(TCP_SERVICE_PORTS, packet_bytes)
+                if class_from_port is not None and class_from_port in PacketLayers.__members__:
+                    layers.add(PacketLayers[class_from_port])
+            elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':
+                layers.add(PacketLayers.UDP)
+                class_from_port = get_class_from_port(UDP_SERVICE_PORTS, packet_bytes)
+                if class_from_port is not None and class_from_port in PacketLayers.__members__:
+                    layers.add(PacketLayers[class_from_port])
+        elif ETH_TYPES.get(eth_type) == 'IPv6':
+            layers.add(PacketLayers.IPV6)
+            ipv6_proto = get_ipv6_proto(packet_bytes)
+            if IPV6_NEXT_HEADERS.get(ipv6_proto) == 'UDP':
+                layers.add(PacketLayers.UDP)
+                class_from_port = get_class_from_port(UDP_SERVICE_PORTS, packet_bytes, offset=20)
+                if class_from_port is not None and class_from_port in PacketLayers.__members__:
+                    layers.add(PacketLayers[class_from_port])
+            if IPV6_NEXT_HEADERS.get(ipv6_proto) == 'ICMPv6':
+                layers.add(PacketLayers.ICMPv6)
+            if IPV6_NEXT_HEADERS.get(ipv6_proto) == 'hop-by-hop':
+                hop_next_header = IPV6_HOP_BY_HOP_NEXT_HEADERS.get(get_ipv6_hop_by_hop_next_header(packet_bytes))
+                if hop_next_header is not None and hop_next_header in PacketLayers.__members__:
+                    layers.add(PacketLayers[hop_next_header])
+    elif int(eth_type, 16) < ETH_802_3_THRESHOLD:  # not an Ethernet II frame
+        layers.add(PacketLayers.ETHERNET_8023)
+        llc_dsap_class = LLC_DSAP.get(get_llc_dsap(packet_bytes))
+        if llc_dsap_class is not None and llc_dsap_class in PacketLayers.__members__:
+            layers.add(PacketLayers[llc_dsap_class])
 
     return layers
+
+
+def get_class_from_port(service_ports_dict: dict, packet_bytes: str, offset: int = 0) -> None | str:
+    """
+    Gets the class of a packet based on the port numbers
+    
+    Args:
+        service_ports_dict (dict): UDP_SERVICE_PORTS or TCP_SERVICE_PORTS depending on packet type
+        packet_bytes (str): string format of packet bytes
+        offset (int=0): offset to use when getting src and dst ports. Useful when this is an IPv6 packet
+    Returns:
+        (None|str): None if there is no port mapping for this packet. Otherwise, string representation of the packet type i.e. 'TCP'
+    """
+    src_port_result = service_ports_dict.get(get_src_port(packet_bytes))
+    dst_port_result = service_ports_dict.get(get_dst_port(packet_bytes))
+    if src_port_result is None and dst_port_result is None:
+        return None
+    else:
+        return src_port_result if src_port_result is not None else dst_port_result
 
 
 def get_ip_class(class_name: str, classes: dict[str, int], packet_bytes: str) -> int:
