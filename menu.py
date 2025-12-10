@@ -18,7 +18,7 @@ import re
 from functools import partial
 import platform
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, auto
 from typing import Optional
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
@@ -33,23 +33,42 @@ class PacketLayers(Enum):
     """
     Enum containing all layers we are interested in
     """
-    ETHERNET = 1
-    ETHERNET_8023 = 2
-    IPV4 = 3
-    IPV6 = 4
-    ARP = 5
-    ICMP = 6
-    ICMPv6 = 7
-    TCP = 8
-    UDP = 9
-    TLS = 11
-    HTTP = 12
-    QUIC = 13
-    DNS = 14
-    MDNS = 15
-    SSDP = 16
-    STP = 17
-    NBNS = 18
+    ETHERNET = auto()
+    ETHERNET_8023 = auto()
+    IPV4 = auto()
+    IPV6 = auto()
+    ARP = auto()
+    ARP_REQUEST = auto()
+    ARP_REPLY = auto()
+    ICMP = auto()
+    ICMP_ECHO_REQUEST = auto()
+    ICMP_ECHO_REPLY = auto()
+    ICMPv6 = auto()
+    TCP = auto()
+    UDP = auto()
+    TLS = auto()
+    HTTP = auto()
+    QUIC = auto()
+    DNS = auto()
+    DNS_RESPONSE = auto()
+    DNS_QUERY = auto()
+    MDNS = auto()
+    SSDP = auto()
+    STP = auto()
+    NBNS = auto()
+
+
+@dataclass(frozen=True)
+class PacketClass:
+    layer: Enum
+    direction: str | None = None
+    address: str | None = None
+
+    def __str__(self):
+        if self.direction is None and self.address is None:
+            return self.layer.name
+        else: 
+            return f'{self.layer.name}-{self.direction}-{self.address}'
 
 
 @dataclass
@@ -112,7 +131,7 @@ CNN_FEATURES_DIMENSION = 14
 MAX_CONVERSATION_LENGTH = 15
 MIN_CONVERSATION_LENGTH = 3
 
-SAMPLES_PER_CLASS = 1000
+SAMPLES_PER_CLASS = 5000
 CONVERSATION_SAMPLES_PER_CLASS = 80
 
 # Maximum number of bars to display on a bar chart
@@ -194,29 +213,26 @@ ARP_OPCODES = {
     '0002' : 'ARP Reply'
 }
 
-ICMP_TYPES = {
+ICMP_OPCODES = {
     '00' : 'ICMP Echo Reply',
     '08' : 'ICMP Echo Request'
 }
 
-# Defines the classes that we care about
-# There must be an "other" class, but if it is defined as -1, it means we do not care about it
 CLASSES = {
-    'ARP Request': 0,
-    'ARP Reply' : 1,
-    'ICMP Echo Request' : 2,
-    'ICMP Echo Reply' : 3,
-    'ICMPv6' : 4,
-    'TLS' : 5,
-    'HTTP' : 6,
-    'DNS-query' : 7,
-    'DNS-response': 8,
-    'QUIC' : 9,
-    'MDNS' : 10,
-    'NBNS' : 11,
-    'SSDP' : 12,
-    'STP' : 13,
-    'Other' : -1
+    PacketClass(PacketLayers.ARP_REQUEST),
+    PacketClass(PacketLayers.ARP_REPLY),
+    PacketClass(PacketLayers.ICMP_ECHO_REQUEST),
+    PacketClass(PacketLayers.ICMP_ECHO_REPLY),
+    PacketClass(PacketLayers.ICMPv6),
+    PacketClass(PacketLayers.TLS),
+    PacketClass(PacketLayers.HTTP),
+    PacketClass(PacketLayers.DNS_QUERY),
+    PacketClass(PacketLayers.DNS_RESPONSE),
+    PacketClass(PacketLayers.QUIC),
+    PacketClass(PacketLayers.MDNS),
+    PacketClass(PacketLayers.NBNS),
+    PacketClass(PacketLayers.SSDP),
+    PacketClass(PacketLayers.STP),
 }
 
 CONVERSATION_CLASSES = {
@@ -981,10 +997,10 @@ def analyze_data():
     print()
 
 
-def extract_time_series_data(target_file_path: str, time_divisions: int) -> tuple[list[dict[int, int]], list[float]]:
+def extract_time_series_data(target_file_path: str, time_divisions: int) -> tuple[list[dict[PacketClass, int]], list[float]]:
     last_micro_time = int(get_last_line(target_file_path).split()[0])
 
-    buckets: list[dict[int, int]] = [{packet_class_int:0 for packet_class_int in CLASSES.values()} for _ in range(time_divisions)]
+    buckets: list[dict[PacketClass, int]] = [{packet_class:0 for packet_class in CLASSES} for _ in range(time_divisions)]
     bucket_cutoffs: list[float] = [i*(last_micro_time/time_divisions) for i in range(time_divisions)]
 
     with open(target_file_path, 'r') as f:
@@ -993,10 +1009,12 @@ def extract_time_series_data(target_file_path: str, time_divisions: int) -> tupl
             micro_time = int(line_list[0].strip())
             packet_bytes = line_list[1].strip()
             bucket_index = int(micro_time//(last_micro_time/time_divisions))
-            if bucket_index == time_divisions:  # the very last packet will otherwise get an index that is one two high
+            if bucket_index == time_divisions:  # the very last packet will otherwise get an index that is one too high
                 bucket_index -= 1
-            packet_class_int = get_packet_class(packet_bytes, CLASSES)
-            buckets[bucket_index][packet_class_int] = buckets[bucket_index].get(packet_class_int, 0) + 1
+            packet_class = get_packet_class(packet_bytes, CLASSES)
+            if packet_class is None:
+                continue
+            buckets[bucket_index][packet_class] = buckets[bucket_index].get(packet_class, 0) + 1
     return buckets, bucket_cutoffs
 
 
@@ -1023,9 +1041,9 @@ def time_series_analysis():
     ax.set_xlabel('Packet Time (s)')
     ax.set_ylabel('Count')
     x_values = [i+(bucket_cuttoffs[1]-bucket_cuttoffs[0]) for i in bucket_cuttoffs]
-    for packet_class_str in CLASSES:
-        packet_class_int = CLASSES[packet_class_str]
-        counts = [d.get(packet_class_int, 0) for d in time_series_data]
+    for packet_class in CLASSES:
+        packet_class_str = str(packet_class)
+        counts = [d.get(packet_class, 0) for d in time_series_data]
         ax.plot(x_values, counts, label=packet_class_str)
     
     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -1252,21 +1270,21 @@ def test_trained_model() -> None:
 
     # Print true counts and predicted counts
     print('\nTrue/Predicted Class Counts:')
-    reverse_classes = dict(zip(CLASSES.values(), CLASSES.keys()))
+    classes_list = list(CLASSES)
     for class_index, pair in enumerate(zip(true_class_bins, predicted_class_bins)):
         true_count, predicted_count = pair
-        print(f'{reverse_classes[class_index]: <20} True: {true_count: <8} Predicted: {predicted_count: <8}')
+        print(f'{str(classes_list[class_index]): <20} True: {true_count: <8} Predicted: {predicted_count: <8}')
     
     print()
 
     # Print confusion matrix (rows are true index, columns are predicted)
     print(' '*20, end='')
-    print(''.join(f'{reverse_classes[i]: <20}' for i in range(cm.shape[0])))
+    print(''.join(f'{str(classes_list[i]): <20}' for i in range(cm.shape[0])))
     for i, row in enumerate(cm):
         for j, val in enumerate(row):
             color = GREEN_COLOR if i == j else RED_COLOR
             if j == 0:  # print the row header
-                print(f'{reverse_classes[i]: <20}', end='')
+                print(f'{str(classes_list[i]): <20}', end='')
             print(f'{color}{val: <20}{DEFAULT_COLOR}', end='')
         print()
 
@@ -1383,6 +1401,11 @@ def get_packet_layers(packet_bytes: str) -> set[Enum]:
         if llc_dsap_class is not None and llc_dsap_class in PacketLayers.__members__:
             layers.add(PacketLayers[llc_dsap_class])
 
+    # If certain layers are present, we should check if subclasses are present (e.g. DNS_REPLY is DNS is present)
+    sub_layer = get_sub_layer(layers, packet_bytes)
+    if sub_layer is not None:
+        layers.add(sub_layer)
+
     return layers
 
 
@@ -1433,79 +1456,80 @@ def get_ip_class(class_name: str, classes: dict[str, int], packet_bytes: str) ->
         return -1
 
 
+def get_sub_layer(layers: set[Enum], packet_bytes: str) -> Enum | None:
+    """
+    Gets the subclass from packet bytes
+    Subclass is ARP request/reply, DNS reponse/query, ICMP request/reply
+    """
+    if PacketLayers.ARP in layers:
+        arp_type = ARP_OPCODES.get(get_arp_opcode(packet_bytes))
+        if arp_type == 'ARP REQUEST':
+            return PacketLayers.ARP_REQUEST
+        elif arp_type == 'ARP REPLY':
+            return PacketLayers.ARP_REPLY
+    elif PacketLayers.ICMP in layers:
+        icmp_type = ICMP_OPCODES.get(get_icmp_type(packet_bytes))
+        if icmp_type == 'ICMP Echo Reply':
+            return PacketLayers.ICMP_ECHO_REPLY
+        elif icmp_type == 'ICMP Echo Request':
+            return PacketLayers.ICMP_ECHO_REQUEST
+    elif PacketLayers.DNS in layers:
+        src_port_service = UDP_SERVICE_PORTS.get(get_src_port(packet_bytes))
+        if src_port_service == 'DNS':
+            return PacketLayers.DNS_RESPONSE
+        else:  # must be the dst port that is making this DNS
+            return PacketLayers.DNS_QUERY
+    return None
+
+
 # returns packet class - See CLASSES definition at the top of the file
-def get_packet_class(packet_bytes: str, classes: dict[str, int] = CLASSES) -> int:
-    """Get the class of this packet of the ones we are interested in
-    
+def get_packet_class(packet_bytes: str, classes: set[PacketClass] = CLASSES) -> PacketClass | None:
+    """
+    Get the class of this packet of the ones we are interested in
+
     Args:
         packet_bytes (str): raw packet bytes to analyze
+        classes (set[PacketClass]): the set of classes to use
     Returns:
-        int: integer representing the packet class. -1 if it is not a class we care about
+        PacketClass | None: the packet class of this packet. None if it does not belong to any
     """
-    other = classes.get('Other')
-    if not other:
-        raise ValueError('No "other" value in classes!')
+    layers = get_packet_layers(packet_bytes)
+    print(layers)
+    packet_class_list = list(classes)
 
-    if ETH_TYPES.get(get_eth_type(packet_bytes)) == 'ARP':  # ARP - is it reply or request
-        return classes.get(ARP_OPCODES.get(get_arp_opcode(packet_bytes), 'Other'), other)
-
-    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv4':  # IPv4
-        if IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'ICMP':  # ICMP - echo reply or request
-            if ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Request':
-                if (ip_class := get_ip_class('ICMP Echo Request', classes, packet_bytes)) != -1:
-                    return ip_class
-            elif ICMP_TYPES.get(get_icmp_type(packet_bytes), 'Other') == 'ICMP Echo Reply':
-                if (ip_class := get_ip_class('ICMP Echo Reply', classes, packet_bytes)) != -1:
-                    return ip_class
-            elif (ip_class := get_ip_class('ICMP', classes, packet_bytes)) != -1:
-                return ip_class
-            return other
-        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'TCP':  # TCP
-            src_port_service = TCP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
-            dst_port_service = TCP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
-            interesting_port_service = src_port_service if src_port_service != 'Other' else dst_port_service
-            if (ip_class := get_ip_class(interesting_port_service, classes, packet_bytes)) != -1:
-                return ip_class
-            return other
-        elif IP_PROTOS.get(get_ip_proto(packet_bytes)) == 'UDP':  # UDP
-            # need extra logic for DNS or DNS-query and DNS-response
-            src_port_service = UDP_SERVICE_PORTS.get(get_src_port(packet_bytes), 'Other')
-            dst_port_service = UDP_SERVICE_PORTS.get(get_dst_port(packet_bytes), 'Other')
-            # If they both are 'Other' just stop now
-            if src_port_service == 'Other' and dst_port_service == 'Other':
-                return other
-            # Need to have some extra logic here because query/response depends on which src/dst port is the DNS port number
-            if src_port_service == 'DNS' or dst_port_service == 'DNS':
-                if (ip_class := get_ip_class('DNS', classes, packet_bytes)) != -1:
-                    return ip_class
-                if src_port_service == 'DNS':
-                    if (ip_class := get_ip_class('DNS-response', classes, packet_bytes)) != -1:
-                        return ip_class
+    # If the layer does not match, score=0
+    # If the layer matches and the class has no src/dst IP qualifiers, score=1
+    # If the layer matches and the class DOES have src/dst IP qualifiers, and they match too, score=2
+    # If the layer matches and the class DOES have src/dst IP qualifiers, BUT they do not match, score=0
+    packet_matching_scores = []
+    for packet_class in packet_class_list:
+        if packet_class.layer in layers:
+            if packet_class.direction is None and packet_class.address is None:  # no src/dst ip qualifiers
+                packet_matching_scores.append(1)
+            else:  # this class does have src/dst ip qualifiers
+                # Can assume at this point there will be an IP layer in this packet
+                src_ip = get_src_ip(packet_bytes)
+                dst_ip = get_dst_ip(packet_bytes)
+                if (packet_class.direction == 'src' and packet_class.address == src_ip) or \
+                    (packet_class.direction == 'dst' and packet_class.address == dst_ip):
+                    packet_matching_scores.append(2)
                 else:
-                    if (ip_class := get_ip_class('DNS-query', classes, packet_bytes)) != -1:
-                        return ip_class
-            else:  # not DNS
-                interesting_port_service = src_port_service if src_port_service != 'Other' else dst_port_service
-                if (ip_class := get_ip_class(interesting_port_service, classes, packet_bytes)) != -1:
-                    return ip_class
-            return other
-        else:  # neither TCP nor UDP
-            return other
+                    packet_matching_scores.append(0)
+        else:
+            packet_matching_scores.append(0)
 
-    elif ETH_TYPES.get(get_eth_type(packet_bytes)) == 'IPv6':
-        if IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'UDP':
-            # offset=20 because the ipv6 header is 20 bytes larger than the ipv4 header
-            return classes.get(UDP_SERVICE_PORTS.get(get_src_port(packet_bytes, offset=20), 'Other'), other)
-        elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'ICMPv6':
-            return classes.get('ICMPv6', other)
-        elif IPV6_NEXT_HEADERS.get(get_ipv6_proto(packet_bytes)) == 'hop-by-hop':
-            return classes.get(IPV6_HOP_BY_HOP_NEXT_HEADERS.get(get_ipv6_hop_by_hop_next_header(packet_bytes), 'Other'), other)
-        else:  # not udp
-            return other
-    elif int(get_eth_type(packet_bytes), 16) < ETH_802_3_THRESHOLD:  # not an Ethernet II frame
-        return classes.get(LLC_DSAP.get(get_llc_dsap(packet_bytes), 'Other'), other)
-    else:
-        return other
+        # The packet class with the highest corresponding score is the best match
+        # If they all have a score of 0, that means there is no match
+        # If there is a tie, go with the one with the higher PacketLayer
+        best_match_index = -1
+        for i, score in enumerate(packet_matching_scores):
+            if best_match_index == -1 and score > 0:
+                best_match_index = i
+            if (score > packet_matching_scores[best_match_index]) or \
+                (score == packet_matching_scores[best_match_index] and \
+                packet_class_list[i].layer.value > packet_class_list[best_match_index].layer.value):
+                best_match_index = i
+    return packet_class_list[best_match_index] if best_match_index > -1 else None
 
 
 def extract_features(X_2D = False):
@@ -1521,8 +1545,8 @@ def extract_features(X_2D = False):
     classes = CLASSES.copy()
     while True:
         help_msg = 'Enter a valid class from the list below:\n'
-        help_msg += '\n'.join(class_name for class_name in classes.keys()) + '\n'
-        class_split_selection = get_user_input('Enter a class to split, if desired, or nothing to continue. (Use "help" for help)', '', str, help_msg, lambda x: x in classes.keys())
+        help_msg += '\n'.join(str(c) for c in classes) + '\n'
+        class_split_selection = get_user_input('Enter a class to split, if desired, or nothing to continue. (Use "help" for help)', '', str, help_msg, lambda x: x in {str(c) for c in classes})
         if class_split_selection:
             classes = split_class(class_split_selection, target_file_path, classes)
         else:
@@ -1540,9 +1564,16 @@ def extract_features(X_2D = False):
     y = []
     X = []
 
+    # Create class to number matching
+    packet_class_nums = {}
+    counter = 0
+    for packet_class in classes:
+        packet_class_nums[packet_class.layer.name] = counter
+        counter += 1
+
     # Initialize counters
     packets_analyzed = 0
-    samples_per_class = {packet_class: 0 for packet_class in classes.values() if packet_class != -1}
+    samples_per_class = {c.layer.name:0 for c in classes}
     features_extracted = 0
     with open(target_file_path, 'r', encoding='utf-8') as target_file:
         # Create a list of nibbles for each packet in target_file
@@ -1553,16 +1584,17 @@ def extract_features(X_2D = False):
                 continue
             packet_bytes = line_list[1]
             packet_class = get_packet_class(packet_bytes, classes=classes)
+            print(packet_class)
 
             # We don't care about this packet
-            if packet_class == -1:
+            if packet_class is None:
                 continue
-            if not samples_per_class[packet_class] < SAMPLES_PER_CLASS:
+            if not samples_per_class[packet_class.layer.name] < SAMPLES_PER_CLASS:
                 continue
 
             # Increment count and add to y
-            samples_per_class[packet_class] += 1
-            y.append(packet_class)
+            samples_per_class[packet_class.layer.name] += 1
+            y.append(packet_class_nums[packet_class.layer.name])
 
             # redact bytes if necessary before grabbing the nibbles
             for func in redact_func_list:
@@ -1589,7 +1621,7 @@ def extract_features(X_2D = False):
     # convert x and y to ndarrays
     y_arr = np.array(y, dtype=int)
     X_arr = np.array(X, dtype=int)
-    q_arr = np.array([list(classes.keys()), list(classes.values())])
+    q_arr = np.array([list(packet_class_nums.keys()), list(packet_class_nums.values())])
 
     # save both X and y to files and q (our classes)
     np.save(y_out_filename, y_arr)
@@ -1598,10 +1630,10 @@ def extract_features(X_2D = False):
 
     print('Packet class counts:')
     not_enough_packets_warning = False
-    for packet_class, count in samples_per_class.items():
+    for packet_class_name, count in samples_per_class.items():
         if count == 0:
             continue
-        print(f'{dict(zip(classes.values(), classes.keys())).get(packet_class):.<40}{count}')
+        print(f'{packet_class_name:.<40}{count}')
         if count < SAMPLES_PER_CLASS:
             not_enough_packets_warning = True
     print()
@@ -1615,7 +1647,7 @@ def extract_features(X_2D = False):
     clear_screen()
 
 
-def split_class(class_selection: str, target_file_path: str, classes: dict[str, int]):
+def split_class(class_selection: str, target_file_path: str, classes: set[PacketClass]):
     """
     Helps the user split the provided class based on the data from this file
 
@@ -1624,18 +1656,15 @@ def split_class(class_selection: str, target_file_path: str, classes: dict[str, 
         target_file_path (str): file we are currently working with
         classes (dict): the classes dictionary to modify
     Returns:
-        (dict): the modified parameter classes after the class has been split
+        (set[PacketClass]): the modified parameter classes after the class has been split
     """
-    # TODO: Modify to work with more than IP address 
-    # examine all those packets
-    class_selection_code = classes.get(class_selection)
     src_ip_counts = {}
     dst_ip_counts = {}
     with open(target_file_path, 'r') as f:
         for line in f:
             packet_bytes = line.split()[1]
             packet_class = get_packet_class(packet_bytes, classes=classes)
-            if packet_class == class_selection_code and PacketLayers.IPV4 in get_packet_layers(packet_bytes):
+            if packet_class is not None and str(packet_class) == class_selection and PacketLayers.IPV4 in get_packet_layers(packet_bytes):
                 src_ip = get_printable_ip(get_src_ip(packet_bytes))
                 dst_ip = get_printable_ip(get_dst_ip(packet_bytes))
                 src_ip_counts[src_ip] = src_ip_counts.get(src_ip, 0) + 1
@@ -1671,26 +1700,16 @@ def split_class(class_selection: str, target_file_path: str, classes: dict[str, 
             red_print('All selections must be either source or destination IP addresses\n')
         else:
             break
-
-    del classes[class_selection]
+    
+    classes = {i for i in classes if str(i) != class_selection}
 
     if ip_selections[0] < len(src_ip_counts):
         for selection in ip_selections:
-            classes[f'{class_selection}-src-{list(src_ip_counts.keys())[selection]}'] = -1  # placeholder value
+            classes.add(PacketClass(PacketLayers[class_selection], 'src', list(src_ip_counts.keys())[selection]))
     else:
         ip_selections = [i-len(src_ip_counts) for i in ip_selections]
         for selection in ip_selections:
-            classes[f'{class_selection}-dst-{list(dst_ip_counts.keys())[selection]}'] = -1  # placeholder value
-    
-    # go through and fix all the class number values now (not really necessary but I want to)
-    counter = 0
-    for key in classes:
-        if key == 'Other' and CLASSES['Other'] == -1:
-            continue
-        classes[key] = counter
-        counter += 1
-    if CLASSES['Other'] == -1:
-        classes['Other'] = -1
+            classes.add(PacketClass(PacketLayers[class_selection], 'dst', list(dst_ip_counts.keys())[selection]))
 
     return classes
 
